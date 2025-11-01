@@ -13,7 +13,7 @@ function gwt --description 'Git worktree wrapper that changes directory on add'
         set new_dir ($git_wt_binary $argv)
         set exit_code $status
         
-        if test $exit_code -eq 0
+        if test $exit_code -eq 0 -a -n "$new_dir"
             echo "Changing directory to workspace $new_dir"
             cd $new_dir
         end

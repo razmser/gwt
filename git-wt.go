@@ -233,11 +233,34 @@ func main() {
 			os.Exit(1)
 		}
 		wtName := os.Args[2]
-		
+
 		var wtPath string
-		// Special case: master/main refers to the repo root
+		// Special case: master/main - find the worktree with that branch
 		if wtName == "master" || wtName == "main" {
-			wtPath = repoRootPath
+			out, err := runGit("worktree", "list", "--porcelain")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error listing worktrees: %v\n", err)
+				os.Exit(1)
+			}
+			// Parse to find the worktree with the master/main branch
+			scanner := bufio.NewScanner(strings.NewReader(out))
+			var currentPath string
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.HasPrefix(line, "worktree ") {
+					currentPath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+				} else if strings.HasPrefix(line, "branch ") {
+					branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+					if branchRef == "refs/heads/"+wtName {
+						wtPath = currentPath
+						break
+					}
+				}
+			}
+			if wtPath == "" {
+				fmt.Fprintf(os.Stderr, "worktree with branch %s not found\n", wtName)
+				os.Exit(1)
+			}
 		} else {
 			wtPath = filepath.Clean(filepath.Join(repoRootPath, "..", fmt.Sprintf("%s-%s", repoName, wtName)))
 			if _, err := os.Stat(wtPath); os.IsNotExist(err) {
