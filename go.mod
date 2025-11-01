@@ -1,3 +1,3 @@
-module github.com/razmser/git-wt-go
+module github.com/razmser/gwt
 
 go 1.25.3
