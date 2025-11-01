@@ -1,6 +1,11 @@
 # git-wt-go
 Small git worktree wrapper to unify usage
 
+## Motivation
+I created this tool to streamline my workflow with Codex.
+My typical workflow involves creating a worktree, starting Codex there, and then continuing to work on something else.
+The problem is that this workflow requires too many commands, or correctly filling three separate fields in lazygit.
+
 ## Installation
 
 Install the binary and Fish function:
