@@ -25,15 +25,6 @@ func runGit(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func mustRunGit(args ...string) string {
-	out, err := runGit(args...)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "git %s: %v\n", strings.Join(args, " "), err)
-		os.Exit(1)
-	}
-	return out
-}
-
 func repoRoot() (string, error) {
 	out, err := runGit("rev-parse", "--show-toplevel")
 	if err != nil {
@@ -44,14 +35,6 @@ func repoRoot() (string, error) {
 
 func repoName(root string) string {
 	return filepath.Base(root)
-}
-
-func gitUserName() string {
-	// Use system username from $USER environment variable, fallback to "user"
-	if user := os.Getenv("USER"); user != "" {
-		return user
-	}
-	return "user"
 }
 
 func detectBaseRef() string {
@@ -77,7 +60,7 @@ func detectBaseRef() string {
 	return "HEAD"
 }
 
-func addWorktree(repoRoot, repoName, user, wtName string) (string, error) {
+func addWorktree(repoRoot, repoName, wtName string) (string, error) {
 	if wtName == "" {
 		return "", errors.New("worktree name is required")
 	}
@@ -190,15 +173,14 @@ func listWtBranches() ([]string, error) {
 	if out == "" {
 		return []string{}, nil
 	}
-	
+
 	var branches []string
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		// Remove the * marker if it's the current branch
-		if strings.HasPrefix(line, "* ") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "* "))
-		}
+		line, _ = strings.CutPrefix(line, "* ")
+		line = strings.TrimSpace(line)
 		if line != "" {
 			branches = append(branches, line)
 		}
@@ -211,30 +193,30 @@ func cleanupWtBranches() error {
 	if err != nil {
 		return fmt.Errorf("failed to list wt/* branches: %w", err)
 	}
-	
+
 	if len(branches) == 0 {
 		fmt.Println("No wt/* branches found.")
 		return nil
 	}
-	
+
 	fmt.Println("The following wt/* branches will be deleted:")
 	for _, branch := range branches {
 		fmt.Printf("  %s\n", branch)
 	}
-	
+
 	fmt.Print("\nAre you sure you want to delete these branches? (y/N): ")
 	reader := bufio.NewReader(os.Stdin)
 	response, err := reader.ReadString('\n')
 	if err != nil {
 		return fmt.Errorf("failed to read confirmation: %w", err)
 	}
-	
+
 	response = strings.TrimSpace(strings.ToLower(response))
 	if response != "y" && response != "yes" {
 		fmt.Println("Cleanup cancelled.")
 		return nil
 	}
-	
+
 	// Delete each branch
 	for _, branch := range branches {
 		fmt.Printf("Deleting %s...\n", branch)
@@ -244,18 +226,18 @@ func cleanupWtBranches() error {
 			fmt.Fprintf(os.Stderr, "Warning: failed to delete %s: %v\n", branch, err)
 		}
 	}
-	
+
 	fmt.Printf("\nDeleted %d wt/* branches.\n", len(branches))
 	return nil
 }
 
 func printUsage() {
 	fmt.Printf(`Usage:
-  gwt add <worktree-name>      # create new worktree and cd into it
-  gwt sw <worktree-name>       # switch to existing worktree
-  gwt list                     # list all worktrees
-  gwt rm <worktree-name>       # remove worktree at ../repo-worktree
-  gwt cleanup|cl               # delete all wt/* branches after confirmation
+  gwt add <worktree-name>       # create new worktree and cd into it
+  gwt switch|sw <worktree-name> # switch to existing worktree
+  gwt list                      # list all worktrees
+  gwt remove|rm <worktree-name> # remove worktree at ../repo-worktree
+  gwt clean|cl                  # delete all wt/* branches after confirmation
 `)
 }
 
@@ -271,7 +253,6 @@ func main() {
 		os.Exit(1)
 	}
 	repoName := repoName(repoRootPath)
-	user := gitUserName()
 
 	sub := os.Args[1]
 	switch sub {
@@ -282,7 +263,7 @@ func main() {
 			os.Exit(1)
 		}
 		wtName := os.Args[2]
-		path, err := addWorktree(repoRootPath, repoName, user, wtName)
+		path, err := addWorktree(repoRootPath, repoName, wtName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error adding worktree: %v\n", err)
 			os.Exit(1)
@@ -294,7 +275,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error listing worktrees: %v\n", err)
 			os.Exit(1)
 		}
-	case "sw":
+	case "sw", "switch":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "sw requires a worktree name")
 			printUsage()
@@ -337,7 +318,7 @@ func main() {
 			}
 		}
 		fmt.Println(wtPath)
-	case "rm":
+	case "rm", "remove":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "rm requires a worktree name")
 			printUsage()
