@@ -182,12 +182,80 @@ func cdWorktree(repoRoot, repoName, wtName string) error {
 	return nil
 }
 
+func listWtBranches() ([]string, error) {
+	out, err := runGit("branch", "--list", "wt/*")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return []string{}, nil
+	}
+	
+	var branches []string
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Remove the * marker if it's the current branch
+		if strings.HasPrefix(line, "* ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "* "))
+		}
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches, scanner.Err()
+}
+
+func cleanupWtBranches() error {
+	branches, err := listWtBranches()
+	if err != nil {
+		return fmt.Errorf("failed to list wt/* branches: %w", err)
+	}
+	
+	if len(branches) == 0 {
+		fmt.Println("No wt/* branches found.")
+		return nil
+	}
+	
+	fmt.Println("The following wt/* branches will be deleted:")
+	for _, branch := range branches {
+		fmt.Printf("  %s\n", branch)
+	}
+	
+	fmt.Print("\nAre you sure you want to delete these branches? (y/N): ")
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read confirmation: %w", err)
+	}
+	
+	response = strings.TrimSpace(strings.ToLower(response))
+	if response != "y" && response != "yes" {
+		fmt.Println("Cleanup cancelled.")
+		return nil
+	}
+	
+	// Delete each branch
+	for _, branch := range branches {
+		fmt.Printf("Deleting %s...\n", branch)
+		cmd := exec.Command("git", "branch", "-D", branch)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to delete %s: %v\n", branch, err)
+		}
+	}
+	
+	fmt.Printf("\nDeleted %d wt/* branches.\n", len(branches))
+	return nil
+}
+
 func printUsage() {
 	fmt.Printf(`Usage:
   gwt add <worktree-name>      # create new worktree and cd into it
   gwt sw <worktree-name>       # switch to existing worktree
   gwt list                     # list all worktrees
   gwt rm <worktree-name>       # remove worktree at ../repo-worktree
+  gwt cleanup|cl               # delete all wt/* branches after confirmation
 `)
 }
 
@@ -278,6 +346,11 @@ func main() {
 		wtName := os.Args[2]
 		if err := removeWorktree(repoRootPath, repoName, wtName); err != nil {
 			fmt.Fprintf(os.Stderr, "error removing worktree: %v\n", err)
+			os.Exit(1)
+		}
+	case "cleanup", "cl":
+		if err := cleanupWtBranches(); err != nil {
+			fmt.Fprintf(os.Stderr, "error cleaning up branches: %v\n", err)
 			os.Exit(1)
 		}
 	default:
