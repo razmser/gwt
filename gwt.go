@@ -158,7 +158,14 @@ func removeWorktree(repoRoot, repoName, wtName string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to remove worktree: %w", err)
+		// If git worktree remove fails, forcibly remove the directory
+		fmt.Fprintf(os.Stderr, "Git worktree remove failed, forcibly removing directory\n")
+		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
+			return fmt.Errorf("failed to remove directory: %w", rmErr)
+		}
+		// Prune the worktree from git's records
+		pruneCmd := exec.Command("git", "worktree", "prune")
+		_ = pruneCmd.Run() // non-fatal
 	}
 	return nil
 }
