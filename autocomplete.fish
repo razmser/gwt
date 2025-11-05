@@ -16,7 +16,7 @@ function __gwt_worktree_names
     end
 
     # Get all worktrees and filter out the current one
-    $HOME/.local/bin/git-wt-go list 2>/dev/null | while read -l wt
+    gwt list 2>/dev/null | while read -l wt
         if test "$wt" != "$current_branch"
             echo $wt
         end
