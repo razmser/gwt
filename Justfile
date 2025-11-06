@@ -2,11 +2,18 @@
 build:
     go build .
 
-# Run checks (format, vet, test)
-check:
-    go fmt .
-    go vet .
+# Run linters
+lint:
+    @echo "Running linters..."
+    golangci-lint run
+
+# Run tests
+test:
+    @echo "Running tests..."
     go test ./...
+
+# Run all checks
+check: lint test
 
 # Clean build artifacts
 clean:

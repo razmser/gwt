@@ -1,0 +1,25 @@
+---
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck      # Check for unchecked errors
+    - gosimple      # Simplify code
+    - govet         # Go vet
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # Static analysis
+    - unused        # Check for unused code
+    - gofmt         # Check code is formatted
+    - goimports     # Check imports are formatted
+    - misspell      # Check for misspelled English words
+    - gosec         # Security focused linter
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/razmser/gwt
+
+  gosec:
+    excludes:
+      - G204  # Subprocess launched with variable - expected for this CLI tool
