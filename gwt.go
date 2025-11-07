@@ -185,6 +185,8 @@ func listWtBranches() ([]string, error) {
 		line := strings.TrimSpace(scanner.Text())
 		// Remove the * marker if it's the current branch
 		line, _ = strings.CutPrefix(line, "* ")
+		// Remove the + marker if it's checked out in another worktree
+		line, _ = strings.CutPrefix(line, "+ ")
 		line = strings.TrimSpace(line)
 		if line != "" {
 			branches = append(branches, line)
@@ -204,8 +206,43 @@ func cleanupWtBranches() error {
 		return nil
 	}
 
-	fmt.Println("The following wt/* branches will be deleted:")
+	// Get active worktree branches
+	out, err := runGit("worktree", "list", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("failed to list worktrees: %w", err)
+	}
+
+	activeBranches := make(map[string]bool)
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "branch ") {
+			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+			if strings.HasPrefix(branchRef, "refs/heads/") {
+				branch := strings.TrimPrefix(branchRef, "refs/heads/")
+				activeBranches[branch] = true
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to parse worktree list: %w", err)
+	}
+
+	// Filter to only dangling branches
+	var danglingBranches []string
 	for _, branch := range branches {
+		if !activeBranches[branch] {
+			danglingBranches = append(danglingBranches, branch)
+		}
+	}
+
+	if len(danglingBranches) == 0 {
+		fmt.Println("No dangling wt/* branches found.")
+		return nil
+	}
+
+	fmt.Println("The following dangling wt/* branches will be deleted:")
+	for _, branch := range danglingBranches {
 		fmt.Printf("  %s\n", branch)
 	}
 
@@ -223,7 +260,7 @@ func cleanupWtBranches() error {
 	}
 
 	// Delete each branch
-	for _, branch := range branches {
+	for _, branch := range danglingBranches {
 		fmt.Printf("Deleting %s...\n", branch)
 		cmd := exec.Command("git", "branch", "-D", branch)
 		cmd.Stderr = os.Stderr
@@ -232,7 +269,7 @@ func cleanupWtBranches() error {
 		}
 	}
 
-	fmt.Printf("\nDeleted %d wt/* branches.\n", len(branches))
+	fmt.Printf("\nDeleted %d dangling wt/* branches.\n", len(danglingBranches))
 	return nil
 }
 
@@ -242,7 +279,7 @@ func printUsage() {
   gwt switch|sw <worktree-name> # switch to existing worktree
   gwt list                      # list all worktrees
   gwt remove|rm <worktree-name> # remove worktree at ../repo-worktree
-  gwt cleanup|cl                # delete all wt/* branches after confirmation
+  gwt cleanup|cl                # delete dangling wt/* branches after confirmation
 `)
 }
 
@@ -359,7 +396,7 @@ func main() {
 		}
 	case "cleanup", "cl":
 		if err := cleanupWtBranches(); err != nil {
-			fmt.Fprintf(os.Stderr, "error cleaning up branches: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error cleaning up dangling branches: %v\n", err)
 			os.Exit(1)
 		}
 	default:
