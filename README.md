@@ -25,11 +25,11 @@ just install  # Installs gwt to ~/bin
 ```bash
 $ gwt -h
 Usage:
-  gwt add <worktree-name>       # create new worktree and cd into it
-  gwt switch|sw <worktree-name> # switch to existing worktree
-  gwt list|ls                   # list all worktrees
-  gwt remove|rm <worktree-name> # remove worktree at ../repo-worktree
-  gwt cleanup|cl                # delete dangling wt/* branches after confirmation
+  gwt add     <worktree-name> # create new worktree and cd into it
+  gwt switch  <worktree-name> # switch to existing worktree
+  gwt remove  <worktree-name> # remove worktree at ../repo-worktree
+  gwt list                    # list all worktrees
+  gwt cleanup                 # delete dangling wt/* branches after confirmation
 ```
 
 ### How it works
