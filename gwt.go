@@ -275,11 +275,11 @@ func cleanupWtBranches() error {
 
 func printUsage() {
 	fmt.Printf(`Usage:
-  gwt add <worktree-name>       # create new worktree and cd into it
-  gwt switch|sw <worktree-name> # switch to existing worktree
-  gwt list|ls                   # list all worktrees
-  gwt remove|rm <worktree-name> # remove worktree at ../repo-worktree
-  gwt cleanup|cl                # delete dangling wt/* branches after confirmation
+  gwt add     <worktree-name> # create new worktree and cd into it
+  gwt switch  <worktree-name> # switch to existing worktree
+  gwt remove  <worktree-name> # remove worktree at ../repo-worktree
+  gwt list                    # list all worktrees
+  gwt cleanup                 # delete dangling wt/* branches after confirmation
 `)
 }
 
@@ -298,7 +298,7 @@ func main() {
 
 	sub := os.Args[1]
 	switch sub {
-	case "add":
+	case "add", "a":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "add requires a worktree name")
 			printUsage()
@@ -323,12 +323,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error connecting with sesh: %v\n", err)
 			os.Exit(1)
 		}
-	case "ls", "list":
+	case "list", "ls", "l":
 		if err := listWorktrees(); err != nil {
 			fmt.Fprintf(os.Stderr, "error listing worktrees: %v\n", err)
 			os.Exit(1)
 		}
-	case "sw", "switch":
+	case "switch", "sw", "s":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "sw requires a worktree name")
 			printUsage()
@@ -383,7 +383,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error connecting with sesh: %v\n", err)
 			os.Exit(1)
 		}
-	case "rm", "remove":
+	case "remove", "rm", "r":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "rm requires a worktree name")
 			printUsage()
@@ -394,7 +394,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error removing worktree: %v\n", err)
 			os.Exit(1)
 		}
-	case "cleanup", "cl":
+	case "cleanup", "cl", "c":
 		if err := cleanupWtBranches(); err != nil {
 			fmt.Fprintf(os.Stderr, "error cleaning up dangling branches: %v\n", err)
 			os.Exit(1)
