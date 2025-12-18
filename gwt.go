@@ -37,6 +37,19 @@ func repoName(root string) string {
 	return filepath.Base(root)
 }
 
+func validateWorktreeName(name string) error {
+	if name == "" {
+		return errors.New("worktree name is required")
+	}
+	if strings.ContainsAny(name, "/\\ \t\n\r") {
+		return errors.New("worktree name cannot contain spaces or slashes")
+	}
+	if name == "." || name == ".." {
+		return errors.New("invalid worktree name")
+	}
+	return nil
+}
+
 func detectBaseRef() string {
 	// Try to detect a sensible base ref to create the worktree from:
 	// 1) origin/HEAD -> origin/main or origin/master
@@ -47,7 +60,6 @@ func detectBaseRef() string {
 	candidates := []string{}
 
 	if out, err := runGit("rev-parse", "--abbrev-ref", "origin/HEAD"); err == nil && out != "" {
-		// rev-parse --abbrev-ref origin/HEAD typically returns "origin/main" etc.
 		candidates = append(candidates, out)
 	}
 	candidates = append(candidates, "origin/main", "origin/master", "main", "master", "HEAD")
@@ -61,9 +73,10 @@ func detectBaseRef() string {
 }
 
 func addWorktree(repoRoot, repoName, wtName string) (string, error) {
-	if wtName == "" {
-		return "", errors.New("worktree name is required")
+	if err := validateWorktreeName(wtName); err != nil {
+		return "", err
 	}
+
 	wtPath := filepath.Clean(filepath.Join(repoRoot, "..", fmt.Sprintf("%s-%s", repoName, wtName)))
 	branch := fmt.Sprintf("wt/%s", wtName)
 	base := detectBaseRef()
@@ -74,10 +87,25 @@ func addWorktree(repoRoot, repoName, wtName string) (string, error) {
 	}
 
 	// git fetch to try keep refs updated (non-fatal)
+	// We ignore the error as it is not critical
 	_ = exec.Command("git", "fetch", "origin").Run()
 
-	// git worktree add -B <branch> <path> <base>
-	cmd := exec.Command("git", "worktree", "add", "-B", branch, wtPath, base)
+	// Check if branch already exists
+	branchExists := false
+	if _, err := runGit("rev-parse", "--verify", branch); err == nil {
+		branchExists = true
+	}
+
+	args := []string{"worktree", "add"}
+	if branchExists {
+		// If branch exists, just checkout that branch
+		args = append(args, wtPath, branch)
+	} else {
+		// Create new branch
+		args = append(args, "-B", branch, wtPath, base)
+	}
+
+	cmd := exec.Command("git", args...)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("failed to add worktree: %w", err)
 	}
@@ -93,81 +121,72 @@ func listWorktrees() error {
 	if out == "" {
 		return nil
 	}
-	// Parse porcelain output: groups of lines like:
-	// worktree /abs/path
-	// HEAD <sha>
-	// branch refs/heads/<branch>
+
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	var currentBranch string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "branch ") {
-			// Extract branch name from "branch refs/heads/<branch>"
 			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
 			if strings.HasPrefix(branchRef, "refs/heads/") {
 				currentBranch = strings.TrimPrefix(branchRef, "refs/heads/")
 			}
 		} else if line == "" && currentBranch != "" {
-			// Empty line marks end of worktree entry
-			// Strip wt/ prefix if present (e.g., "wt/tmp-8" -> "tmp-8")
-			displayName := currentBranch
-			if strings.HasPrefix(currentBranch, "wt/") {
-				displayName = strings.TrimPrefix(currentBranch, "wt/")
-			}
-			fmt.Println(displayName)
+			printDisplayName(currentBranch)
 			currentBranch = ""
 		}
 	}
-	// Handle last entry if no trailing empty line
 	if currentBranch != "" {
-		displayName := currentBranch
-		if strings.HasPrefix(currentBranch, "wt/") {
-			displayName = strings.TrimPrefix(currentBranch, "wt/")
-		}
-		fmt.Println(displayName)
+		printDisplayName(currentBranch)
 	}
 	return scanner.Err()
 }
 
-func removeWorktree(repoRoot, repoName, wtName string) error {
-	if wtName == "" {
-		return errors.New("worktree name is required")
+func printDisplayName(branch string) {
+	displayName := branch
+	if strings.HasPrefix(branch, "wt/") {
+		displayName = strings.TrimPrefix(branch, "wt/")
 	}
+	fmt.Println(displayName)
+}
+
+func removeWorktree(repoRoot, repoName, wtName string) error {
+	if err := validateWorktreeName(wtName); err != nil {
+		return err
+	}
+
 	repoDir := fmt.Sprintf("%s-%s", repoName, wtName)
 	wtPath := filepath.Clean(filepath.Join(repoRoot, "..", repoDir))
-	// check if exists
+
 	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
 		return fmt.Errorf("worktree path does not exist: %s", wtPath)
 	}
 
-	// Kill tmux session if it exists
-	fmt.Fprintf(os.Stderr, "Checking for tmux session: %s\n", repoDir)
-	cmd := exec.Command("tmux", "has-session", "-t", repoDir)
-	if err := cmd.Run(); err == nil {
-		// Session exists, kill it
-		fmt.Fprintf(os.Stderr, "Killing tmux session: %s\n", repoDir)
-		cmd = exec.Command("tmux", "kill-session", "-t", repoDir)
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to kill tmux session: %v\n", err)
-		}
-	}
+	// Kill tmux session
+	killTmuxSession(repoDir)
 
-	// git worktree remove --force <path>
 	fmt.Fprintf(os.Stderr, "Removing worktree at %s\n", wtPath)
-	cmd = exec.Command("git", "worktree", "remove", "--force", wtPath)
+	cmd := exec.Command("git", "worktree", "remove", "--force", wtPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		// If git worktree remove fails, forcibly remove the directory
 		fmt.Fprintf(os.Stderr, "Git worktree remove failed, forcibly removing directory\n")
 		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
 			return fmt.Errorf("failed to remove directory: %w", rmErr)
 		}
-		// Prune the worktree from git's records
-		pruneCmd := exec.Command("git", "worktree", "prune")
-		_ = pruneCmd.Run() // non-fatal
+		_ = exec.Command("git", "worktree", "prune").Run()
 	}
 	return nil
+}
+
+func killTmuxSession(sessionName string) {
+	fmt.Fprintf(os.Stderr, "Checking for tmux session: %s\n", sessionName)
+	if err := exec.Command("tmux", "has-session", "-t", sessionName).Run(); err == nil {
+		fmt.Fprintf(os.Stderr, "Killing tmux session: %s\n", sessionName)
+		if err := exec.Command("tmux", "kill-session", "-t", sessionName).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to kill tmux session: %v\n", err)
+		}
+	}
 }
 
 func listWtBranches() ([]string, error) {
@@ -183,9 +202,7 @@ func listWtBranches() ([]string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		// Remove the * marker if it's the current branch
 		line, _ = strings.CutPrefix(line, "* ")
-		// Remove the + marker if it's checked out in another worktree
 		line, _ = strings.CutPrefix(line, "+ ")
 		line = strings.TrimSpace(line)
 		if line != "" {
@@ -206,7 +223,6 @@ func cleanupWtBranches() error {
 		return nil
 	}
 
-	// Get active worktree branches
 	out, err := runGit("worktree", "list", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("failed to list worktrees: %w", err)
@@ -219,16 +235,11 @@ func cleanupWtBranches() error {
 		if strings.HasPrefix(line, "branch ") {
 			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
 			if strings.HasPrefix(branchRef, "refs/heads/") {
-				branch := strings.TrimPrefix(branchRef, "refs/heads/")
-				activeBranches[branch] = true
+				activeBranches[strings.TrimPrefix(branchRef, "refs/heads/")] = true
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("failed to parse worktree list: %w", err)
-	}
 
-	// Filter to only dangling branches
 	var danglingBranches []string
 	for _, branch := range branches {
 		if !activeBranches[branch] {
@@ -259,17 +270,83 @@ func cleanupWtBranches() error {
 		return nil
 	}
 
-	// Delete each branch
 	for _, branch := range danglingBranches {
 		fmt.Printf("Deleting %s...\n", branch)
-		cmd := exec.Command("git", "branch", "-D", branch)
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+		if err := exec.Command("git", "branch", "-D", branch).Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to delete %s: %v\n", branch, err)
 		}
 	}
 
 	fmt.Printf("\nDeleted %d dangling wt/* branches.\n", len(danglingBranches))
+	return nil
+}
+
+func connectSesh(path string) error {
+	// Add to zoxide
+	_ = exec.Command("zoxide", "add", path).Run()
+
+	cmd := exec.Command("sesh", "connect", path)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+func findWorktreePath(wtName string) (string, error) {
+	out, err := runGit("worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	var currentPath string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "worktree ") {
+			currentPath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		} else if strings.HasPrefix(line, "branch ") {
+			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+			if branchRef == "refs/heads/"+wtName {
+				return currentPath, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func runAdd(repoRootPath, repoName, wtName string) error {
+	path, err := addWorktree(repoRootPath, repoName, wtName)
+	if err != nil {
+		return err
+	}
+	if err := connectSesh(path); err != nil {
+		return fmt.Errorf("error connecting with sesh: %w", err)
+	}
+	return nil
+}
+
+func runSwitch(repoRootPath, repoName, wtName string) error {
+	var wtPath string
+	// Special case: master/main - find the worktree with that branch
+	if wtName == "master" || wtName == "main" {
+		var err error
+		wtPath, err = findWorktreePath(wtName)
+		if err != nil {
+			return fmt.Errorf("error searching for worktree: %w", err)
+		}
+		if wtPath == "" {
+			return fmt.Errorf("worktree with branch %s not found", wtName)
+		}
+	} else {
+		wtPath = filepath.Clean(filepath.Join(repoRootPath, "..", fmt.Sprintf("%s-%s", repoName, wtName)))
+		if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+			return fmt.Errorf("worktree does not exist: %s", wtPath)
+		}
+	}
+
+	if err := connectSesh(wtPath); err != nil {
+		return fmt.Errorf("error connecting with sesh: %w", err)
+	}
 	return nil
 }
 
@@ -304,23 +381,8 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		wtName := os.Args[2]
-		path, err := addWorktree(repoRootPath, repoName, wtName)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error adding worktree: %v\n", err)
-			os.Exit(1)
-		}
-		// Add to zoxide
-		cmd := exec.Command("zoxide", "add", path)
-		_ = cmd.Run() // non-fatal if zoxide fails
-
-		// Connect with sesh
-		cmd = exec.Command("sesh", "connect", wtName)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "error connecting with sesh: %v\n", err)
+		if err := runAdd(repoRootPath, repoName, os.Args[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 	case "list", "ls", "l":
@@ -334,53 +396,8 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		wtName := os.Args[2]
-
-		var wtPath string
-		// Special case: master/main - find the worktree with that branch
-		if wtName == "master" || wtName == "main" {
-			out, err := runGit("worktree", "list", "--porcelain")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error listing worktrees: %v\n", err)
-				os.Exit(1)
-			}
-			// Parse to find the worktree with the master/main branch
-			scanner := bufio.NewScanner(strings.NewReader(out))
-			var currentPath string
-			for scanner.Scan() {
-				line := scanner.Text()
-				if strings.HasPrefix(line, "worktree ") {
-					currentPath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
-				} else if strings.HasPrefix(line, "branch ") {
-					branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
-					if branchRef == "refs/heads/"+wtName {
-						wtPath = currentPath
-						break
-					}
-				}
-			}
-			if wtPath == "" {
-				fmt.Fprintf(os.Stderr, "worktree with branch %s not found\n", wtName)
-				os.Exit(1)
-			}
-		} else {
-			wtPath = filepath.Clean(filepath.Join(repoRootPath, "..", fmt.Sprintf("%s-%s", repoName, wtName)))
-			if _, err := os.Stat(wtPath); os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "worktree does not exist: %s\n", wtPath)
-				os.Exit(1)
-			}
-		}
-		// Add to zoxide
-		cmd := exec.Command("zoxide", "add", wtPath)
-		_ = cmd.Run() // non-fatal if zoxide fails
-
-		// Connect with sesh
-		cmd = exec.Command("sesh", "connect", wtPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "error connecting with sesh: %v\n", err)
+		if err := runSwitch(repoRootPath, repoName, os.Args[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 	case "remove", "rm", "r":
@@ -389,8 +406,7 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		wtName := os.Args[2]
-		if err := removeWorktree(repoRootPath, repoName, wtName); err != nil {
+		if err := removeWorktree(repoRootPath, repoName, os.Args[2]); err != nil {
 			fmt.Fprintf(os.Stderr, "error removing worktree: %v\n", err)
 			os.Exit(1)
 		}
