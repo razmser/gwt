@@ -16,9 +16,10 @@ function __gwt_worktree_names
     end
 
     # Get all worktrees and filter out the current one
-    gwt list 2>/dev/null | while read -l wt
-        if test "$wt" != "$current_branch"
-            echo $wt
+    # gwt list now outputs two columns: worktree_name  branch
+    gwt list 2>/dev/null | while read -l wt_name branch
+        if test "$wt_name" != "$current_branch"
+            echo $wt_name
         end
     end
 end

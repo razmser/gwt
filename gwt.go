@@ -122,32 +122,73 @@ func listWorktrees() error {
 		return nil
 	}
 
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	repoName := repoName(root)
+
+	type wtInfo struct {
+		path   string
+		branch string
+	}
+	var worktrees []wtInfo
+
 	scanner := bufio.NewScanner(strings.NewReader(out))
+	var currentPath string
 	var currentBranch string
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "branch ") {
+		if strings.HasPrefix(line, "worktree ") {
+			currentPath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		} else if strings.HasPrefix(line, "branch ") {
 			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
 			if strings.HasPrefix(branchRef, "refs/heads/") {
 				currentBranch = strings.TrimPrefix(branchRef, "refs/heads/")
 			}
-		} else if line == "" && currentBranch != "" {
-			printDisplayName(currentBranch)
+		} else if line == "" && currentPath != "" && currentBranch != "" {
+			worktrees = append(worktrees, wtInfo{currentPath, currentBranch})
+			currentPath = ""
 			currentBranch = ""
 		}
 	}
-	if currentBranch != "" {
-		printDisplayName(currentBranch)
+	if currentPath != "" && currentBranch != "" {
+		worktrees = append(worktrees, wtInfo{currentPath, currentBranch})
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	// Calculate max width for alignment
+	maxWidth := 0
+	for _, wt := range worktrees {
+		name := extractWorktreeName(filepath.Base(wt.path), repoName)
+		if len(name) > maxWidth {
+			maxWidth = len(name)
+		}
+	}
+
+	// Print aligned output
+	for _, wt := range worktrees {
+		name := extractWorktreeName(filepath.Base(wt.path), repoName)
+		fmt.Printf("%-*s  %s\n", maxWidth, name, wt.branch)
+	}
+
+	return nil
 }
 
-func printDisplayName(branch string) {
-	displayName := branch
-	if strings.HasPrefix(branch, "wt/") {
-		displayName = strings.TrimPrefix(branch, "wt/")
+func extractWorktreeName(dirName, repoName string) string {
+	// If it's exactly the repo name, it's the main worktree
+	if dirName == repoName {
+		return dirName
 	}
-	fmt.Println(displayName)
+	// Otherwise, strip the "repoName-" prefix
+	prefix := repoName + "-"
+	if strings.HasPrefix(dirName, prefix) {
+		return strings.TrimPrefix(dirName, prefix)
+	}
+	// Fallback: return the directory name as-is
+	return dirName
 }
 
 func removeWorktree(repoRoot, repoName, wtName string) error {
