@@ -26,7 +26,7 @@ just install  # Installs gwt to ~/bin
 $ gwt -h
 Usage:
   gwt add     <worktree-name> # create new worktree and cd into it
-  gwt switch  <worktree-name> # switch to existing worktree
+  gwt switch  [worktree-name] # switch to existing worktree (or main repo if no arg)
   gwt remove  <worktree-name> # remove worktree at ../repo-worktree
   gwt list                    # list all worktrees
   gwt cleanup                 # delete dangling wt/* branches after confirmation
@@ -35,10 +35,11 @@ Usage:
 ### How it works
 
 - **Branch naming**: Worktrees are created with branch names in the format `wt/<name>`
-- **Directory structure**: Worktrees are created as `../<repo>-<name>` relative to your repo root
+- **Directory structure**: Worktrees are created as `<main-repo-parent>/<repo>-<name>` alongside your main repo
 - **Tmux integration**: The `gwt add` and `gwt sw` commands use `sesh` to connect to tmux sessions at the worktree directory
 - **Directory tracking**: Uses `zoxide` to track frequently used worktree paths
-- **Special cases**: `gwt sw master` and `gwt sw main` switch to the repository root
+- **Main repo switching**: `gwt sw` with no arguments or `gwt sw <repo-name>` switches to the main repository
+- **Smart listing**: `gwt list` shows worktree names and branches in two columns, excluding the main repository
 - **Cleanup**: When removing a worktree, associated tmux session is automatically killed
 
 ### Examples
@@ -47,22 +48,23 @@ Usage:
 # Create a new worktree for feature "parsing"
 gwt add parsing
 # Creates branch: wt/parsing
-# Creates directory: ../gwt-parsing
+# Creates directory: ../gwt-parsing (alongside main repo)
 # Attaches to tmux session for the worktree
 
-# List all worktrees (shows short names)
+# List all worktrees (shows name and branch in two columns)
 gwt list
 # Output:
-# master
-# parsing
-# tmp-8
+# parsing  wt/parsing
+# tmp-8    wt/tmp-8
+# (main repo is not shown)
 
 # Switch to existing worktree
 gwt sw parsing
 # Attaches to tmux session at ../gwt-parsing
 
-# Switch back to main repo
-gwt sw master
+# Switch back to main repo (either works from any worktree)
+gwt sw
+gwt sw gwt
 
 # Remove a worktree
 gwt rm parsing
