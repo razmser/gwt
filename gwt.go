@@ -168,9 +168,13 @@ func listWorktrees() error {
 		}
 	}
 
-	// Print aligned output
+	// Print aligned output (skip main worktree)
 	for _, wt := range worktrees {
 		name := extractWorktreeName(filepath.Base(wt.path), repoName)
+		// Skip the main worktree (where name equals repoName)
+		if name == repoName {
+			continue
+		}
 		fmt.Printf("%-*s  %s\n", maxWidth, name, wt.branch)
 	}
 
