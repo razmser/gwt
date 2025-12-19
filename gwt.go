@@ -37,6 +37,31 @@ func repoName(root string) string {
 	return filepath.Base(root)
 }
 
+func getMainWorktreePath() (string, error) {
+	out, err := runGit("worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "worktree ") {
+			mainPath := strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+			return mainPath, nil
+		}
+	}
+	return "", fmt.Errorf("could not determine main worktree")
+}
+
+func getMainWorktreeName() (string, error) {
+	mainPath, err := getMainWorktreePath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Base(mainPath), nil
+}
+
 func validateWorktreeName(name string) error {
 	if name == "" {
 		return errors.New("worktree name is required")
@@ -77,7 +102,11 @@ func addWorktree(repoRoot, repoName, wtName string) (string, error) {
 		return "", err
 	}
 
-	wtPath := filepath.Clean(filepath.Join(repoRoot, "..", fmt.Sprintf("%s-%s", repoName, wtName)))
+	mainPath, err := getMainWorktreePath()
+	if err != nil {
+		return "", err
+	}
+	wtPath := filepath.Clean(filepath.Join(filepath.Dir(mainPath), fmt.Sprintf("%s-%s", repoName, wtName)))
 	branch := fmt.Sprintf("wt/%s", wtName)
 	base := detectBaseRef()
 
@@ -122,25 +151,30 @@ func listWorktrees() error {
 		return nil
 	}
 
-	root, err := repoRoot()
+	repoName, err := getMainWorktreeName()
 	if err != nil {
 		return err
 	}
-	repoName := repoName(root)
 
 	type wtInfo struct {
 		path   string
 		branch string
 	}
 	var worktrees []wtInfo
+	var mainWorktreePath string
 
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	var currentPath string
 	var currentBranch string
+	isFirst := true
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "worktree ") {
 			currentPath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+			if isFirst {
+				mainWorktreePath = currentPath
+				isFirst = false
+			}
 		} else if strings.HasPrefix(line, "branch ") {
 			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
 			if strings.HasPrefix(branchRef, "refs/heads/") {
@@ -159,9 +193,12 @@ func listWorktrees() error {
 		return err
 	}
 
-	// Calculate max width for alignment
+	// Calculate max width for alignment (skip main worktree)
 	maxWidth := 0
 	for _, wt := range worktrees {
+		if wt.path == mainWorktreePath {
+			continue
+		}
 		name := extractWorktreeName(filepath.Base(wt.path), repoName)
 		if len(name) > maxWidth {
 			maxWidth = len(name)
@@ -170,11 +207,10 @@ func listWorktrees() error {
 
 	// Print aligned output (skip main worktree)
 	for _, wt := range worktrees {
-		name := extractWorktreeName(filepath.Base(wt.path), repoName)
-		// Skip the main worktree (where name equals repoName)
-		if name == repoName {
+		if wt.path == mainWorktreePath {
 			continue
 		}
+		name := extractWorktreeName(filepath.Base(wt.path), repoName)
 		fmt.Printf("%-*s  %s\n", maxWidth, name, wt.branch)
 	}
 
@@ -200,8 +236,12 @@ func removeWorktree(repoRoot, repoName, wtName string) error {
 		return err
 	}
 
+	mainPath, err := getMainWorktreePath()
+	if err != nil {
+		return err
+	}
 	repoDir := fmt.Sprintf("%s-%s", repoName, wtName)
-	wtPath := filepath.Clean(filepath.Join(repoRoot, "..", repoDir))
+	wtPath := filepath.Clean(filepath.Join(filepath.Dir(mainPath), repoDir))
 
 	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
 		return fmt.Errorf("worktree path does not exist: %s", wtPath)
@@ -337,28 +377,6 @@ func connectSesh(path string) error {
 	return cmd.Run()
 }
 
-func findWorktreePath(wtName string) (string, error) {
-	out, err := runGit("worktree", "list", "--porcelain")
-	if err != nil {
-		return "", err
-	}
-
-	scanner := bufio.NewScanner(strings.NewReader(out))
-	var currentPath string
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "worktree ") {
-			currentPath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
-		} else if strings.HasPrefix(line, "branch ") {
-			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
-			if branchRef == "refs/heads/"+wtName {
-				return currentPath, nil
-			}
-		}
-	}
-	return "", nil
-}
-
 func runAdd(repoRootPath, repoName, wtName string) error {
 	path, err := addWorktree(repoRootPath, repoName, wtName)
 	if err != nil {
@@ -372,18 +390,28 @@ func runAdd(repoRootPath, repoName, wtName string) error {
 
 func runSwitch(repoRootPath, repoName, wtName string) error {
 	var wtPath string
-	// Special case: master/main - find the worktree with that branch
-	if wtName == "master" || wtName == "main" {
+
+	switch wtName {
+	case "":
+		// No argument - switch to main repo
 		var err error
-		wtPath, err = findWorktreePath(wtName)
+		wtPath, err = getMainWorktreePath()
 		if err != nil {
-			return fmt.Errorf("error searching for worktree: %w", err)
+			return err
 		}
-		if wtPath == "" {
-			return fmt.Errorf("worktree with branch %s not found", wtName)
+	case repoName:
+		// Switching to main repo by name
+		var err error
+		wtPath, err = getMainWorktreePath()
+		if err != nil {
+			return err
 		}
-	} else {
-		wtPath = filepath.Clean(filepath.Join(repoRootPath, "..", fmt.Sprintf("%s-%s", repoName, wtName)))
+	default:
+		mainPath, err := getMainWorktreePath()
+		if err != nil {
+			return err
+		}
+		wtPath = filepath.Clean(filepath.Join(filepath.Dir(mainPath), fmt.Sprintf("%s-%s", repoName, wtName)))
 		if _, err := os.Stat(wtPath); os.IsNotExist(err) {
 			return fmt.Errorf("worktree does not exist: %s", wtPath)
 		}
@@ -398,7 +426,7 @@ func runSwitch(repoRootPath, repoName, wtName string) error {
 func printUsage() {
 	fmt.Printf(`Usage:
   gwt add     <worktree-name> # create new worktree and cd into it
-  gwt switch  <worktree-name> # switch to existing worktree
+  gwt switch  [worktree-name] # switch to existing worktree (or main repo if no arg)
   gwt remove  <worktree-name> # remove worktree at ../repo-worktree
   gwt list                    # list all worktrees
   gwt cleanup                 # delete dangling wt/* branches after confirmation
@@ -416,7 +444,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: must be run inside a git repository")
 		os.Exit(1)
 	}
-	repoName := repoName(repoRootPath)
+	repoName, err := getMainWorktreeName()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: could not determine repo name: %v\n", err)
+		os.Exit(1)
+	}
 
 	sub := os.Args[1]
 	switch sub {
@@ -436,12 +468,14 @@ func main() {
 			os.Exit(1)
 		}
 	case "switch", "sw", "s":
+		var wtName string
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "sw requires a worktree name")
-			printUsage()
-			os.Exit(1)
+			// No argument - switch to main repo
+			wtName = ""
+		} else {
+			wtName = os.Args[2]
 		}
-		if err := runSwitch(repoRootPath, repoName, os.Args[2]); err != nil {
+		if err := runSwitch(repoRootPath, repoName, wtName); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
