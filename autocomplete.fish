@@ -5,7 +5,7 @@ complete -c gwt -f -n "__fish_use_subcommand" -a "add" -d "Create new worktree a
 complete -c gwt -f -n "__fish_use_subcommand" -a "switch" -d "Switch to existing worktree"
 complete -c gwt -f -n "__fish_use_subcommand" -a "list" -d "List all worktrees"
 complete -c gwt -f -n "__fish_use_subcommand" -a "remove" -d "Remove worktree"
-complete -c gwt -f -n "__fish_use_subcommand" -a "cleanup" -d "Remove worktree"
+complete -c gwt -f -n "__fish_use_subcommand" -a "cleanup" -d "Delete dangling wt/* branches"
 
 # Helper function to get worktree names
 function __gwt_worktree_names
@@ -24,9 +24,7 @@ function __gwt_worktree_names
     end
 end
 
-# Complete worktree names for 'rm' and 'sw' subcommands
-complete -c gwt -f -n "__fish_seen_subcommand_from rm" -a "(__gwt_worktree_names)"
-complete -c gwt -f -n "__fish_seen_subcommand_from remove" -a "(__gwt_worktree_names)"
-complete -c gwt -f -n "__fish_seen_subcommand_from sw" -a "(__gwt_worktree_names)"
-complete -c gwt -f -n "__fish_seen_subcommand_from switch" -a "(__gwt_worktree_names)"
+# Complete worktree names for remove and switch subcommands (including short aliases)
+complete -c gwt -f -n "__fish_seen_subcommand_from remove rm r" -a "(__gwt_worktree_names)"
+complete -c gwt -f -n "__fish_seen_subcommand_from switch sw s" -a "(__gwt_worktree_names)"
 
