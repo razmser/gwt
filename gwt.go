@@ -97,7 +97,7 @@ func detectBaseRef() string {
 	return "HEAD"
 }
 
-func addWorktree(repoRoot, repoName, wtName string) (string, error) {
+func addWorktree(repoName, wtName string) (string, error) {
 	if err := validateWorktreeName(wtName); err != nil {
 		return "", err
 	}
@@ -231,7 +231,7 @@ func extractWorktreeName(dirName, repoName string) string {
 	return dirName
 }
 
-func removeWorktree(repoRoot, repoName, wtName string) error {
+func removeWorktree(repoName, wtName string) error {
 	if err := validateWorktreeName(wtName); err != nil {
 		return err
 	}
@@ -377,8 +377,8 @@ func connectSesh(path string) error {
 	return cmd.Run()
 }
 
-func runAdd(repoRootPath, repoName, wtName string) error {
-	path, err := addWorktree(repoRootPath, repoName, wtName)
+func runAdd(repoName, wtName string) error {
+	path, err := addWorktree(repoName, wtName)
 	if err != nil {
 		return err
 	}
@@ -388,7 +388,7 @@ func runAdd(repoRootPath, repoName, wtName string) error {
 	return nil
 }
 
-func runSwitch(repoRootPath, repoName, wtName string) error {
+func runSwitch(repoName, wtName string) error {
 	var wtPath string
 
 	switch wtName {
@@ -438,9 +438,15 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+
+	// Handle help flags before git repo check
+	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
+		printUsage()
+		os.Exit(0)
+	}
+
 	// confirm inside git repo
-	repoRootPath, err := repoRoot()
-	if err != nil {
+	if _, err := repoRoot(); err != nil {
 		fmt.Fprintln(os.Stderr, "error: must be run inside a git repository")
 		os.Exit(1)
 	}
@@ -458,7 +464,7 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		if err := runAdd(repoRootPath, repoName, os.Args[2]); err != nil {
+		if err := runAdd(repoName, os.Args[2]); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
@@ -475,7 +481,7 @@ func main() {
 		} else {
 			wtName = os.Args[2]
 		}
-		if err := runSwitch(repoRootPath, repoName, wtName); err != nil {
+		if err := runSwitch(repoName, wtName); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
@@ -485,7 +491,7 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		if err := removeWorktree(repoRootPath, repoName, os.Args[2]); err != nil {
+		if err := removeWorktree(repoName, os.Args[2]); err != nil {
 			fmt.Fprintf(os.Stderr, "error removing worktree: %v\n", err)
 			os.Exit(1)
 		}
