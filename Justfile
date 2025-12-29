@@ -18,7 +18,7 @@ clean:
 # Run tests
 test:
     @echo "Running tests..."
-    go test ./...
+    go test -timeout 60s ./...
 
 # Run linters
 lint:
