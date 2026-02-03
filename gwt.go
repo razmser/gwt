@@ -252,12 +252,14 @@ func removeWorktree(repoName, wtName string) error {
 
 	fmt.Fprintf(os.Stderr, "Removing worktree at %s\n", wtPath)
 	cmd := exec.Command("git", "worktree", "remove", "--force", wtPath)
-	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Git worktree remove failed, forcibly removing directory\n")
-		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
-			return fmt.Errorf("failed to remove directory: %w", rmErr)
+		rmCmd := exec.Command("rm", "-rf", wtPath)
+		rmCmd.Stdout = os.Stdout
+		rmCmd.Stderr = os.Stderr
+		if rmErr := rmCmd.Run(); rmErr != nil {
+			return fmt.Errorf("git worktree remove failed and rm -rf also failed: %w", rmErr)
 		}
 		_ = exec.Command("git", "worktree", "prune").Run()
 	}
