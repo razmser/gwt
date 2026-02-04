@@ -97,51 +97,6 @@ func detectBaseRef() string {
 	return "HEAD"
 }
 
-func addWorktree(repoName, wtName string) (string, error) {
-	if err := validateWorktreeName(wtName); err != nil {
-		return "", err
-	}
-
-	mainPath, err := getMainWorktreePath()
-	if err != nil {
-		return "", err
-	}
-	wtPath := filepath.Clean(filepath.Join(filepath.Dir(mainPath), fmt.Sprintf("%s-%s", repoName, wtName)))
-	branch := fmt.Sprintf("wt/%s", wtName)
-	base := detectBaseRef()
-
-	// Ensure parent dir exists (parent of wtPath)
-	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
-		return "", fmt.Errorf("creating parent dir: %w", err)
-	}
-
-	// git fetch to try keep refs updated (non-fatal)
-	// We ignore the error as it is not critical
-	_ = exec.Command("git", "fetch", "origin").Run()
-
-	// Check if branch already exists
-	branchExists := false
-	if _, err := runGit("rev-parse", "--verify", branch); err == nil {
-		branchExists = true
-	}
-
-	args := []string{"worktree", "add"}
-	if branchExists {
-		// If branch exists, just checkout that branch
-		args = append(args, wtPath, branch)
-	} else {
-		// Create new branch
-		args = append(args, "-B", branch, wtPath, base)
-	}
-
-	cmd := exec.Command("git", args...)
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to add worktree: %w", err)
-	}
-
-	return wtPath, nil
-}
-
 func listWorktrees() error {
 	out, err := runGit("worktree", "list", "--porcelain")
 	if err != nil {
@@ -379,8 +334,116 @@ func connectSesh(path string) error {
 	return cmd.Run()
 }
 
-func runAdd(repoName, wtName string) error {
-	path, err := addWorktree(repoName, wtName)
+func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
+	out, err := runGit("-C", mainPath, "status", "--ignored", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("failed to list ignored files: %w", err)
+	}
+
+	if out == "" {
+		return nil
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "!!") {
+			relPath := strings.TrimSpace(strings.TrimPrefix(line, "!!"))
+			srcPath := filepath.Join(mainPath, relPath)
+			dstPath := filepath.Join(wtPath, relPath)
+
+			info, err := os.Lstat(srcPath)
+			if err != nil {
+				continue
+			}
+
+			if info.IsDir() {
+				if err := os.MkdirAll(dstPath, 0o755); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to create directory %s: %v\n", dstPath, err)
+					continue
+				}
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to create parent directory for %s: %v\n", dstPath, err)
+					continue
+				}
+				target, err := os.Readlink(srcPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to read symlink %s: %v\n", srcPath, err)
+					continue
+				}
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(srcPath), target)
+				}
+				if err := os.Symlink(target, dstPath); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to create symlink %s: %v\n", dstPath, err)
+				}
+			} else {
+				if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to create parent directory for %s: %v\n", dstPath, err)
+					continue
+				}
+				data, err := os.ReadFile(srcPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to read file %s: %v\n", srcPath, err)
+					continue
+				}
+				if err := os.WriteFile(dstPath, data, info.Mode()); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write file %s: %v\n", dstPath, err)
+				}
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+func addWorktree(repoName, wtName string, skipIgnore bool) (string, error) {
+	if err := validateWorktreeName(wtName); err != nil {
+		return "", err
+	}
+
+	mainPath, err := getMainWorktreePath()
+	if err != nil {
+		return "", err
+	}
+	wtPath := filepath.Clean(filepath.Join(filepath.Dir(mainPath), fmt.Sprintf("%s-%s", repoName, wtName)))
+	branch := fmt.Sprintf("wt/%s", wtName)
+	base := detectBaseRef()
+
+	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
+		return "", fmt.Errorf("creating parent dir: %w", err)
+	}
+
+	_ = exec.Command("git", "fetch", "origin").Run()
+
+	branchExists := false
+	if _, err := runGit("rev-parse", "--verify", branch); err == nil {
+		branchExists = true
+	}
+
+	args := []string{"worktree", "add"}
+	if branchExists {
+		args = append(args, wtPath, branch)
+	} else {
+		args = append(args, "-B", branch, wtPath, base)
+	}
+
+	cmd := exec.Command("git", args...)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to add worktree: %w", err)
+	}
+
+	if !skipIgnore {
+		if err := copyIgnoredFilesToWorktree(mainPath, wtPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to copy ignored files: %v\n", err)
+		}
+	}
+
+	return wtPath, nil
+}
+
+func runAdd(repoName, wtName string, skipIgnore bool) error {
+	path, err := addWorktree(repoName, wtName, skipIgnore)
 	if err != nil {
 		return err
 	}
@@ -427,11 +490,11 @@ func runSwitch(repoName, wtName string) error {
 
 func printUsage() {
 	fmt.Printf(`Usage:
-  gwt add     <worktree-name> # create new worktree and cd into it
-  gwt switch  [worktree-name] # switch to existing worktree (or main repo if no arg)
-  gwt remove  <worktree-name> # remove worktree at ../repo-worktree
-  gwt list                    # list all worktrees
-  gwt cleanup                 # delete dangling wt/* branches after confirmation
+  gwt add <worktree-name> [--skip-ignore|-i]  # create new worktree and cd into it
+  gwt switch  [worktree-name]                 # switch to existing worktree (or main repo if no arg)
+  gwt remove  <worktree-name>                 # remove worktree at ../repo-worktree
+  gwt list                                    # list all worktrees
+  gwt cleanup                                 # delete dangling wt/* branches after confirmation
 `)
 }
 
@@ -461,12 +524,28 @@ func main() {
 	sub := os.Args[1]
 	switch sub {
 	case "add", "a":
-		if len(os.Args) < 3 {
+		skipIgnore := false
+		var wtName string
+
+		for i := 2; i < len(os.Args); i++ {
+			arg := os.Args[i]
+			if arg == "--skip-ignore" || arg == "-i" {
+				skipIgnore = true
+			} else if wtName == "" {
+				wtName = arg
+			} else {
+				fmt.Fprintf(os.Stderr, "error: unexpected argument '%s'\n", arg)
+				printUsage()
+				os.Exit(1)
+			}
+		}
+
+		if wtName == "" {
 			fmt.Fprintln(os.Stderr, "add requires a worktree name")
 			printUsage()
 			os.Exit(1)
 		}
-		if err := runAdd(repoName, os.Args[2]); err != nil {
+		if err := runAdd(repoName, wtName, skipIgnore); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
