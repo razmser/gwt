@@ -97,6 +97,102 @@ func detectBaseRef() string {
 	return "HEAD"
 }
 
+type wtInfo struct {
+	path     string
+	branch   string
+	head     string
+	detached bool
+}
+
+func parseWorktrees(out string) ([]wtInfo, error) {
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+
+	var worktrees []wtInfo
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	current := wtInfo{}
+
+	flush := func() {
+		if current.path == "" {
+			return
+		}
+		worktrees = append(worktrees, current)
+		current = wtInfo{}
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			current.path = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		case strings.HasPrefix(line, "branch "):
+			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+			if strings.HasPrefix(branchRef, "refs/heads/") {
+				current.branch = strings.TrimPrefix(branchRef, "refs/heads/")
+			}
+		case strings.HasPrefix(line, "HEAD "):
+			current.head = strings.TrimSpace(strings.TrimPrefix(line, "HEAD "))
+		case line == "detached":
+			current.detached = true
+		case line == "":
+			flush()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	flush()
+
+	return worktrees, nil
+}
+
+func formatWorktreeRef(wt wtInfo) string {
+	if wt.branch != "" {
+		return wt.branch
+	}
+	if wt.detached {
+		head := wt.head
+		if len(head) > 7 {
+			head = head[:7]
+		}
+		if head != "" {
+			return fmt.Sprintf("(detached @ %s)", head)
+		}
+		return "(detached)"
+	}
+	return "(no branch)"
+}
+
+func matchWorktreeByName(worktrees []wtInfo, repoName, wtName string) *wtInfo {
+	for _, wt := range worktrees {
+		dirName := filepath.Base(wt.path)
+		if extractWorktreeName(dirName, repoName) == wtName || dirName == wtName {
+			wtCopy := wt
+			return &wtCopy
+		}
+	}
+	return nil
+}
+
+func findWorktreeByName(repoName, wtName string) (*wtInfo, error) {
+	out, err := runGit("worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+
+	worktrees, err := parseWorktrees(out)
+	if err != nil {
+		return nil, err
+	}
+
+	if wt := matchWorktreeByName(worktrees, repoName, wtName); wt != nil {
+		return wt, nil
+	}
+	return nil, fmt.Errorf("worktree does not exist: %s", wtName)
+}
+
 func listWorktrees() error {
 	out, err := runGit("worktree", "list", "--porcelain")
 	if err != nil {
@@ -111,42 +207,14 @@ func listWorktrees() error {
 		return err
 	}
 
-	type wtInfo struct {
-		path   string
-		branch string
-	}
-	var worktrees []wtInfo
-	var mainWorktreePath string
-
-	scanner := bufio.NewScanner(strings.NewReader(out))
-	var currentPath string
-	var currentBranch string
-	isFirst := true
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "worktree ") {
-			currentPath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
-			if isFirst {
-				mainWorktreePath = currentPath
-				isFirst = false
-			}
-		} else if strings.HasPrefix(line, "branch ") {
-			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
-			if strings.HasPrefix(branchRef, "refs/heads/") {
-				currentBranch = strings.TrimPrefix(branchRef, "refs/heads/")
-			}
-		} else if line == "" && currentPath != "" && currentBranch != "" {
-			worktrees = append(worktrees, wtInfo{currentPath, currentBranch})
-			currentPath = ""
-			currentBranch = ""
-		}
-	}
-	if currentPath != "" && currentBranch != "" {
-		worktrees = append(worktrees, wtInfo{currentPath, currentBranch})
-	}
-	if err := scanner.Err(); err != nil {
+	worktrees, err := parseWorktrees(out)
+	if err != nil {
 		return err
 	}
+	if len(worktrees) == 0 {
+		return nil
+	}
+	mainWorktreePath := worktrees[0].path
 
 	// Calculate max width for alignment (skip main worktree)
 	maxWidth := 0
@@ -166,7 +234,7 @@ func listWorktrees() error {
 			continue
 		}
 		name := extractWorktreeName(filepath.Base(wt.path), repoName)
-		fmt.Printf("%-*s  %s\n", maxWidth, name, wt.branch)
+		fmt.Printf("%-*s  %s\n", maxWidth, name, formatWorktreeRef(wt))
 	}
 
 	return nil
@@ -195,15 +263,18 @@ func removeWorktree(repoName, wtName string) error {
 	if err != nil {
 		return err
 	}
-	repoDir := fmt.Sprintf("%s-%s", repoName, wtName)
-	wtPath := filepath.Clean(filepath.Join(filepath.Dir(mainPath), repoDir))
 
-	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
-		return fmt.Errorf("worktree path does not exist: %s", wtPath)
+	wt, err := findWorktreeByName(repoName, wtName)
+	if err != nil {
+		return err
+	}
+	wtPath := wt.path
+	if filepath.Clean(wtPath) == filepath.Clean(mainPath) {
+		return errors.New("refusing to remove the main worktree")
 	}
 
 	// Kill tmux session
-	killTmuxSession(repoDir)
+	killTmuxSession(filepath.Base(wtPath))
 
 	fmt.Fprintf(os.Stderr, "Removing worktree at %s\n", wtPath)
 	cmd := exec.Command("git", "worktree", "remove", "--force", wtPath)
@@ -271,14 +342,13 @@ func cleanupWtBranches() error {
 	}
 
 	activeBranches := make(map[string]bool)
-	scanner := bufio.NewScanner(strings.NewReader(out))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "branch ") {
-			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
-			if strings.HasPrefix(branchRef, "refs/heads/") {
-				activeBranches[strings.TrimPrefix(branchRef, "refs/heads/")] = true
-			}
+	worktrees, err := parseWorktrees(out)
+	if err != nil {
+		return fmt.Errorf("failed to parse worktrees: %w", err)
+	}
+	for _, wt := range worktrees {
+		if wt.branch != "" {
+			activeBranches[wt.branch] = true
 		}
 	}
 
@@ -472,14 +542,11 @@ func runSwitch(repoName, wtName string) error {
 			return err
 		}
 	default:
-		mainPath, err := getMainWorktreePath()
+		wt, err := findWorktreeByName(repoName, wtName)
 		if err != nil {
 			return err
 		}
-		wtPath = filepath.Clean(filepath.Join(filepath.Dir(mainPath), fmt.Sprintf("%s-%s", repoName, wtName)))
-		if _, err := os.Stat(wtPath); os.IsNotExist(err) {
-			return fmt.Errorf("worktree does not exist: %s", wtPath)
-		}
+		wtPath = wt.path
 	}
 
 	if err := connectSesh(wtPath); err != nil {

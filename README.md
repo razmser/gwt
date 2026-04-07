@@ -39,7 +39,8 @@ Usage:
 - **Tmux integration**: The `gwt add` and `gwt sw` commands use `sesh` to connect to tmux sessions at the worktree directory
 - **Directory tracking**: Uses `zoxide` to track frequently used worktree paths
 - **Main repo switching**: `gwt sw` with no arguments or `gwt sw <repo-name>` switches to the main repository
-- **Smart listing**: `gwt list` shows worktree names and branches in two columns, excluding the main repository
+- **Smart listing**: `gwt list` shows worktree names and refs in two columns, excluding the main repository; detached worktrees are shown as `(detached @ <commit>)`
+- **Name-based switching/removal**: `gwt sw <name>` and `gwt rm <name>` resolve against the actual Git worktree list, so detached worktrees can be managed too
 - **Cleanup**: When removing a worktree, associated tmux session is automatically killed
 
 ### Examples
@@ -51,10 +52,11 @@ gwt add parsing
 # Creates directory: ../gwt-parsing (alongside main repo)
 # Attaches to tmux session for the worktree
 
-# List all worktrees (shows name and branch in two columns)
+# List all worktrees (shows name and ref in two columns)
 gwt list
 # Output:
 # parsing  wt/parsing
+# old-fix  (detached @ dccfb99)
 # tmp-8    wt/tmp-8
 # (main repo is not shown)
 
