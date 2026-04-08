@@ -12,6 +12,7 @@ import (
 )
 
 func runGit(args ...string) (string, error) {
+	// #nosec G702 -- arguments are passed directly to the git binary without a shell.
 	cmd := exec.Command("git", args...)
 	cmd.Stderr = &bytes.Buffer{}
 	out, err := cmd.Output()
@@ -73,6 +74,32 @@ func validateWorktreeName(name string) error {
 		return errors.New("invalid worktree name")
 	}
 	return nil
+}
+
+func safeJoinWithin(base, relPath string) (string, error) {
+	if relPath == "" {
+		return "", errors.New("path is empty")
+	}
+	if filepath.IsAbs(relPath) {
+		return "", fmt.Errorf("path %q must be relative", relPath)
+	}
+
+	base = filepath.Clean(base)
+	cleaned := filepath.Clean(relPath)
+	if cleaned == "." {
+		return "", fmt.Errorf("path %q resolves to the base directory", relPath)
+	}
+
+	joined := filepath.Join(base, cleaned)
+	relativeToBase, err := filepath.Rel(base, joined)
+	if err != nil {
+		return "", fmt.Errorf("failed to validate path %q: %w", relPath, err)
+	}
+	if relativeToBase == ".." || strings.HasPrefix(relativeToBase, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path %q escapes base directory %q", relPath, base)
+	}
+
+	return joined, nil
 }
 
 func detectBaseRef() string {
@@ -395,8 +422,10 @@ func cleanupWtBranches() error {
 
 func connectSesh(path string) error {
 	// Add to zoxide
+	// #nosec G702 -- path is passed directly as a single argument without shell expansion.
 	_ = exec.Command("zoxide", "add", path).Run()
 
+	// #nosec G702 -- path is passed directly to sesh without invoking a shell.
 	cmd := exec.Command("sesh", "connect", path)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -419,8 +448,16 @@ func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "!!") {
 			relPath := strings.TrimSpace(strings.TrimPrefix(line, "!!"))
-			srcPath := filepath.Join(mainPath, relPath)
-			dstPath := filepath.Join(wtPath, relPath)
+			srcPath, err := safeJoinWithin(mainPath, relPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: skipping ignored path %q: %v\n", relPath, err)
+				continue
+			}
+			dstPath, err := safeJoinWithin(wtPath, relPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: skipping ignored path %q: %v\n", relPath, err)
+				continue
+			}
 
 			info, err := os.Lstat(srcPath)
 			if err != nil {
@@ -458,6 +495,7 @@ func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
 					fmt.Fprintf(os.Stderr, "Warning: failed to read file %s: %v\n", srcPath, err)
 					continue
 				}
+				// #nosec G703 -- dstPath is constrained to stay within the validated worktree root.
 				if err := os.WriteFile(dstPath, data, info.Mode()); err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to write file %s: %v\n", dstPath, err)
 				}
@@ -498,6 +536,7 @@ func addWorktree(repoName, wtName string, skipIgnore bool) (string, error) {
 		args = append(args, "-B", branch, wtPath, base)
 	}
 
+	// #nosec G702 -- arguments are passed directly to the git binary without a shell.
 	cmd := exec.Command("git", args...)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("failed to add worktree: %w", err)

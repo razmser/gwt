@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -134,5 +135,49 @@ func TestMatchWorktreeByName(t *testing.T) {
 	}
 	if wt := matchWorktreeByName(worktrees, "thinker", "missing"); wt != nil {
 		t.Fatalf("matchWorktreeByName returned %+v for missing worktree; want nil", wt)
+	}
+}
+
+func TestSafeJoinWithin(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "tmp", "gwt")
+
+	tests := []struct {
+		name    string
+		relPath string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "nested path",
+			relPath: filepath.Join("cache", "foo.txt"),
+			want:    filepath.Join(base, "cache", "foo.txt"),
+		},
+		{
+			name:    "cleaned path",
+			relPath: filepath.Join("cache", "..", "state", "bar.txt"),
+			want:    filepath.Join(base, "state", "bar.txt"),
+		},
+		{
+			name:    "escape path",
+			relPath: filepath.Join("..", "escape"),
+			wantErr: true,
+		},
+		{
+			name:    "absolute path",
+			relPath: filepath.Join(string(filepath.Separator), "etc", "passwd"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := safeJoinWithin(base, tt.relPath)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("safeJoinWithin(%q, %q) error = %v; wantErr %v", base, tt.relPath, err, tt.wantErr)
+			}
+			if err == nil && got != tt.want {
+				t.Fatalf("safeJoinWithin(%q, %q) = %q; want %q", base, tt.relPath, got, tt.want)
+			}
+		})
 	}
 }
