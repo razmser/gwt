@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -179,5 +181,39 @@ func TestSafeJoinWithin(t *testing.T) {
 				t.Fatalf("safeJoinWithin(%q, %q) = %q; want %q", base, tt.relPath, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCopyIgnoredFilesToWorktreeCopiesIgnoredDirectoriesRecursively(t *testing.T) {
+	mainPath := t.TempDir()
+	wtPath := t.TempDir()
+
+	cmd := exec.Command("git", "init", "-q", mainPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(filepath.Join(mainPath, ".gitignore"), []byte("ignored/\n"), 0o600); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	srcFile := filepath.Join(mainPath, "ignored", "nested", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
+		t.Fatalf("mkdir ignored dir: %v", err)
+	}
+	if err := os.WriteFile(srcFile, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write ignored file: %v", err)
+	}
+
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath); err != nil {
+		t.Fatalf("copyIgnoredFilesToWorktree returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(wtPath, "ignored", "nested", "file.txt"))
+	if err != nil {
+		t.Fatalf("read copied ignored file: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("copied ignored file = %q; want %q", got, "hello")
 	}
 }

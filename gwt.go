@@ -433,6 +433,53 @@ func connectSesh(path string) error {
 	return cmd.Run()
 }
 
+func copyPath(srcPath, dstPath string) error {
+	info, err := os.Lstat(srcPath)
+	if err != nil {
+		return err
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+			return err
+		}
+		target, err := os.Readlink(srcPath)
+		if err != nil {
+			return err
+		}
+		return os.Symlink(target, dstPath)
+	}
+
+	if info.IsDir() {
+		if err := os.MkdirAll(dstPath, info.Mode().Perm()); err != nil {
+			return err
+		}
+
+		entries, err := os.ReadDir(srcPath)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if err := copyPath(filepath.Join(srcPath, name), filepath.Join(dstPath, name)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return err
+	}
+	// #nosec G703 -- dstPath is constrained to stay within the validated worktree root.
+	return os.WriteFile(dstPath, data, info.Mode())
+}
+
 func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
 	out, err := runGit("-C", mainPath, "status", "--ignored", "--porcelain")
 	if err != nil {
@@ -459,46 +506,8 @@ func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
 				continue
 			}
 
-			info, err := os.Lstat(srcPath)
-			if err != nil {
-				continue
-			}
-
-			if info.IsDir() {
-				if err := os.MkdirAll(dstPath, 0o755); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to create directory %s: %v\n", dstPath, err)
-					continue
-				}
-			} else if info.Mode()&os.ModeSymlink != 0 {
-				if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to create parent directory for %s: %v\n", dstPath, err)
-					continue
-				}
-				target, err := os.Readlink(srcPath)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to read symlink %s: %v\n", srcPath, err)
-					continue
-				}
-				if !filepath.IsAbs(target) {
-					target = filepath.Join(filepath.Dir(srcPath), target)
-				}
-				if err := os.Symlink(target, dstPath); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to create symlink %s: %v\n", dstPath, err)
-				}
-			} else {
-				if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to create parent directory for %s: %v\n", dstPath, err)
-					continue
-				}
-				data, err := os.ReadFile(srcPath)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to read file %s: %v\n", srcPath, err)
-					continue
-				}
-				// #nosec G703 -- dstPath is constrained to stay within the validated worktree root.
-				if err := os.WriteFile(dstPath, data, info.Mode()); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to write file %s: %v\n", dstPath, err)
-				}
+			if err := copyPath(srcPath, dstPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to copy %s to %s: %v\n", srcPath, dstPath, err)
 			}
 		}
 	}
