@@ -217,3 +217,84 @@ func TestCopyIgnoredFilesToWorktreeCopiesIgnoredDirectoriesRecursively(t *testin
 		t.Fatalf("copied ignored file = %q; want %q", got, "hello")
 	}
 }
+
+func TestCopyIgnoredFilesToWorktreeRewritesInternalSymlinks(t *testing.T) {
+	mainPath := t.TempDir()
+	wtPath := t.TempDir()
+
+	cmd := exec.Command("git", "init", "-q", mainPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(filepath.Join(mainPath, ".gitignore"), []byte("docs/\n"), 0o600); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	targetPath := filepath.Join(mainPath, "docs", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir docs dir: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("agent"), 0o600); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+
+	linkPath := filepath.Join(mainPath, "docs", "CLAUDE.md")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath); err != nil {
+		t.Fatalf("copyIgnoredFilesToWorktree returned error: %v", err)
+	}
+
+	dstLink := filepath.Join(wtPath, "docs", "CLAUDE.md")
+	gotTarget, err := os.Readlink(dstLink)
+	if err != nil {
+		t.Fatalf("read copied symlink: %v", err)
+	}
+
+	resolvedTarget := gotTarget
+	if !filepath.IsAbs(resolvedTarget) {
+		resolvedTarget = filepath.Join(filepath.Dir(dstLink), resolvedTarget)
+	}
+	if got, want := filepath.Clean(resolvedTarget), filepath.Join(wtPath, "docs", "AGENTS.md"); got != want {
+		t.Fatalf("copied symlink resolves to %q; want %q", got, want)
+	}
+}
+
+func TestCopyIgnoredFilesToWorktreePreservesAbsoluteGitSymlinks(t *testing.T) {
+	mainPath := t.TempDir()
+	wtPath := t.TempDir()
+
+	cmd := exec.Command("git", "init", "-q", mainPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(filepath.Join(mainPath, ".gitignore"), []byte("docs/\n"), 0o600); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	linkPath := filepath.Join(mainPath, "docs", "git-head")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir docs dir: %v", err)
+	}
+
+	targetPath := filepath.Join(mainPath, ".git", "HEAD")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath); err != nil {
+		t.Fatalf("copyIgnoredFilesToWorktree returned error: %v", err)
+	}
+
+	gotTarget, err := os.Readlink(filepath.Join(wtPath, "docs", "git-head"))
+	if err != nil {
+		t.Fatalf("read copied symlink: %v", err)
+	}
+	if gotTarget != targetPath {
+		t.Fatalf("copied symlink target = %q; want %q", gotTarget, targetPath)
+	}
+}

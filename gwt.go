@@ -433,7 +433,31 @@ func connectSesh(path string) error {
 	return cmd.Run()
 }
 
-func copyPath(srcPath, dstPath string) error {
+func mapSymlinkTarget(mainPath, wtPath, srcPath, dstPath, target string) (string, error) {
+	resolvedTarget := target
+	if !filepath.IsAbs(resolvedTarget) {
+		resolvedTarget = filepath.Join(filepath.Dir(srcPath), resolvedTarget)
+	}
+	resolvedTarget = filepath.Clean(resolvedTarget)
+
+	gitDir := filepath.Clean(filepath.Join(mainPath, ".git"))
+	if resolvedTarget == gitDir || strings.HasPrefix(resolvedTarget, gitDir+string(os.PathSeparator)) {
+		return target, nil
+	}
+
+	relToMain, err := filepath.Rel(mainPath, resolvedTarget)
+	if err != nil {
+		return "", err
+	}
+	if relToMain == ".." || strings.HasPrefix(relToMain, ".."+string(os.PathSeparator)) {
+		return target, nil
+	}
+
+	mappedTarget := filepath.Join(wtPath, relToMain)
+	return filepath.Rel(filepath.Dir(dstPath), mappedTarget)
+}
+
+func copyPath(mainPath, wtPath, srcPath, dstPath string) error {
 	info, err := os.Lstat(srcPath)
 	if err != nil {
 		return err
@@ -447,7 +471,11 @@ func copyPath(srcPath, dstPath string) error {
 		if err != nil {
 			return err
 		}
-		return os.Symlink(target, dstPath)
+		mappedTarget, err := mapSymlinkTarget(mainPath, wtPath, srcPath, dstPath, target)
+		if err != nil {
+			return err
+		}
+		return os.Symlink(mappedTarget, dstPath)
 	}
 
 	if info.IsDir() {
@@ -461,7 +489,7 @@ func copyPath(srcPath, dstPath string) error {
 		}
 		for _, entry := range entries {
 			name := entry.Name()
-			if err := copyPath(filepath.Join(srcPath, name), filepath.Join(dstPath, name)); err != nil {
+			if err := copyPath(mainPath, wtPath, filepath.Join(srcPath, name), filepath.Join(dstPath, name)); err != nil {
 				return err
 			}
 		}
@@ -506,7 +534,7 @@ func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
 				continue
 			}
 
-			if err := copyPath(srcPath, dstPath); err != nil {
+			if err := copyPath(mainPath, wtPath, srcPath, dstPath); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to copy %s to %s: %v\n", srcPath, dstPath, err)
 			}
 		}
