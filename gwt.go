@@ -570,7 +570,7 @@ func addWorktree(repoName, wtName string, skipIgnore bool) (string, error) {
 	if branchExists {
 		args = append(args, wtPath, branch)
 	} else {
-		args = append(args, "-B", branch, wtPath, base)
+		args = append(args, "-B", branch, "--no-track", wtPath, base)
 	}
 
 	// #nosec G702 -- arguments are passed directly to the git binary without a shell.
