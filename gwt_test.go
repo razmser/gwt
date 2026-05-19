@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -205,7 +206,7 @@ func TestCopyIgnoredFilesToWorktreeCopiesIgnoredDirectoriesRecursively(t *testin
 		t.Fatalf("write ignored file: %v", err)
 	}
 
-	if err := copyIgnoredFilesToWorktree(mainPath, wtPath); err != nil {
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath, ignoredCopy); err != nil {
 		t.Fatalf("copyIgnoredFilesToWorktree returned error: %v", err)
 	}
 
@@ -244,7 +245,7 @@ func TestCopyIgnoredFilesToWorktreeRewritesInternalSymlinks(t *testing.T) {
 		t.Fatalf("create symlink: %v", err)
 	}
 
-	if err := copyIgnoredFilesToWorktree(mainPath, wtPath); err != nil {
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath, ignoredCopy); err != nil {
 		t.Fatalf("copyIgnoredFilesToWorktree returned error: %v", err)
 	}
 
@@ -286,7 +287,7 @@ func TestCopyIgnoredFilesToWorktreePreservesAbsoluteGitSymlinks(t *testing.T) {
 		t.Fatalf("create symlink: %v", err)
 	}
 
-	if err := copyIgnoredFilesToWorktree(mainPath, wtPath); err != nil {
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath, ignoredCopy); err != nil {
 		t.Fatalf("copyIgnoredFilesToWorktree returned error: %v", err)
 	}
 
@@ -296,5 +297,135 @@ func TestCopyIgnoredFilesToWorktreePreservesAbsoluteGitSymlinks(t *testing.T) {
 	}
 	if gotTarget != targetPath {
 		t.Fatalf("copied symlink target = %q; want %q", gotTarget, targetPath)
+	}
+}
+
+func TestHardlinkIgnoredFiles(t *testing.T) {
+	mainPath := t.TempDir()
+	wtPath := t.TempDir()
+
+	cmd := exec.Command("git", "init", "-q", mainPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(filepath.Join(mainPath, ".gitignore"), []byte("ignored/\n"), 0o600); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	srcFile := filepath.Join(mainPath, "ignored", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
+		t.Fatalf("mkdir ignored dir: %v", err)
+	}
+	if err := os.WriteFile(srcFile, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write ignored file: %v", err)
+	}
+
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath, ignoredHardlink); err != nil {
+		t.Fatalf("copyIgnoredFilesToWorktree returned error: %v", err)
+	}
+
+	dstFile := filepath.Join(wtPath, "ignored", "file.txt")
+	got, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("read hard-linked file: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("hard-linked file content = %q; want %q", got, "hello")
+	}
+
+	srcInfo, err := os.Stat(srcFile)
+	if err != nil {
+		t.Fatalf("stat src: %v", err)
+	}
+	dstInfo, err := os.Stat(dstFile)
+	if err != nil {
+		t.Fatalf("stat dst: %v", err)
+	}
+	if !os.SameFile(srcInfo, dstInfo) {
+		t.Fatal("expected src and dst to be the same file (hardlink), but they are not")
+	}
+}
+
+func TestIgnoredSkipStrategy(t *testing.T) {
+	mainPath := t.TempDir()
+	wtPath := t.TempDir()
+
+	cmd := exec.Command("git", "init", "-q", mainPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+
+	if err := os.WriteFile(filepath.Join(mainPath, ".gitignore"), []byte("ignored/\n"), 0o600); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	srcFile := filepath.Join(mainPath, "ignored", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(srcFile), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(srcFile, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath, ignoredSkip); err != nil {
+		t.Fatalf("copyIgnoredFilesToWorktree returned error: %v", err)
+	}
+
+	dstFile := filepath.Join(wtPath, "ignored", "file.txt")
+	if _, err := os.Stat(dstFile); !os.IsNotExist(err) {
+		t.Fatal("expected ignored file to NOT exist with skip strategy")
+	}
+}
+
+func TestHardlinkWarnOnFailure(t *testing.T) {
+	mainPath := t.TempDir()
+	wtPath := t.TempDir()
+
+	srcFile := filepath.Join(mainPath, "file.txt")
+	if err := os.WriteFile(srcFile, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	dstFile := filepath.Join(wtPath, "file.txt")
+	if err := os.WriteFile(dstFile, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
+
+	err := copyPath(mainPath, wtPath, srcFile, dstFile, ignoredHardlink)
+	if err != nil {
+		t.Fatalf("expected nil error on hardlink failure, got: %v", err)
+	}
+
+	got, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "existing" {
+		t.Fatalf("dst file content = %q; want %q (should not be modified on hardlink failure)", got, "existing")
+	}
+}
+
+func TestInvalidIgnoredValue(t *testing.T) {
+	if os.Getenv("TEST_INVALID_IGNORED") == "1" {
+		os.Args = []string{"gwt", "add", "testwt", "--ignored=foo"}
+		main()
+		return
+	}
+
+	dir := t.TempDir()
+	if err := exec.Command("git", "init", "-q", dir).Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestInvalidIgnoredValue") //nolint:gosec // G702: os.Args[0] is the test binary itself
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "TEST_INVALID_IGNORED=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit code for invalid --ignored value")
+	}
+	if !strings.Contains(string(out), "invalid --ignored value") {
+		t.Fatalf("expected invalid --ignored error message, got: %s", out)
 	}
 }

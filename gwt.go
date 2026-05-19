@@ -11,6 +11,33 @@ import (
 	"strings"
 )
 
+type ignoredStrategy int
+
+const (
+	ignoredCopy ignoredStrategy = iota
+	ignoredHardlink
+	ignoredSkip
+)
+
+const ignoredUnset ignoredStrategy = -1
+
+func hardlinkSupported(dir string) bool {
+	src, err := os.CreateTemp(dir, "gwt-hlprobe-*-src")
+	if err != nil {
+		return false
+	}
+	srcName := src.Name()
+	src.Close()
+	defer os.Remove(srcName)
+	dstName := srcName + "-dst"
+	err = os.Link(srcName, dstName)
+	if err == nil {
+		os.Remove(dstName)
+		return true
+	}
+	return false
+}
+
 func runGit(args ...string) (string, error) {
 	// #nosec G702 -- arguments are passed directly to the git binary without a shell.
 	cmd := exec.Command("git", args...)
@@ -457,7 +484,7 @@ func mapSymlinkTarget(mainPath, wtPath, srcPath, dstPath, target string) (string
 	return filepath.Rel(filepath.Dir(dstPath), mappedTarget)
 }
 
-func copyPath(mainPath, wtPath, srcPath, dstPath string) error {
+func copyPath(mainPath, wtPath, srcPath, dstPath string, strategy ignoredStrategy) error {
 	info, err := os.Lstat(srcPath)
 	if err != nil {
 		return err
@@ -489,7 +516,7 @@ func copyPath(mainPath, wtPath, srcPath, dstPath string) error {
 		}
 		for _, entry := range entries {
 			name := entry.Name()
-			if err := copyPath(mainPath, wtPath, filepath.Join(srcPath, name), filepath.Join(dstPath, name)); err != nil {
+			if err := copyPath(mainPath, wtPath, filepath.Join(srcPath, name), filepath.Join(dstPath, name), strategy); err != nil {
 				return err
 			}
 		}
@@ -500,15 +527,25 @@ func copyPath(mainPath, wtPath, srcPath, dstPath string) error {
 		return err
 	}
 
+	if strategy == ignoredHardlink && info.Mode().IsRegular() {
+		if err := os.Link(srcPath, dstPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to hardlink %s to %s: %v\n", srcPath, dstPath, err)
+			return nil
+		}
+		return nil
+	}
+
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		return err
 	}
-	// #nosec G703 -- dstPath is constrained to stay within the validated worktree root.
-	return os.WriteFile(dstPath, data, info.Mode())
+	return os.WriteFile(dstPath, data, info.Mode()) // #nosec G703 -- dstPath is constrained to stay within the validated worktree root.
 }
 
-func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
+func copyIgnoredFilesToWorktree(mainPath, wtPath string, strategy ignoredStrategy) error {
+	if strategy == ignoredSkip {
+		return nil
+	}
 	out, err := runGit("-C", mainPath, "status", "--ignored", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("failed to list ignored files: %w", err)
@@ -534,7 +571,7 @@ func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
 				continue
 			}
 
-			if err := copyPath(mainPath, wtPath, srcPath, dstPath); err != nil {
+			if err := copyPath(mainPath, wtPath, srcPath, dstPath, strategy); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to copy %s to %s: %v\n", srcPath, dstPath, err)
 			}
 		}
@@ -542,7 +579,7 @@ func copyIgnoredFilesToWorktree(mainPath, wtPath string) error {
 	return scanner.Err()
 }
 
-func addWorktree(repoName, wtName string, skipIgnore bool) (string, error) {
+func addWorktree(repoName, wtName string, strategy ignoredStrategy) (string, error) {
 	if err := validateWorktreeName(wtName); err != nil {
 		return "", err
 	}
@@ -553,6 +590,15 @@ func addWorktree(repoName, wtName string, skipIgnore bool) (string, error) {
 	}
 	wtPath := filepath.Clean(filepath.Join(filepath.Dir(mainPath), fmt.Sprintf("%s-%s", repoName, wtName)))
 	branch := fmt.Sprintf("wt/%s", wtName)
+
+	if strategy == ignoredUnset {
+		if hardlinkSupported(filepath.Dir(wtPath)) {
+			strategy = ignoredHardlink
+		} else {
+			strategy = ignoredCopy
+		}
+	}
+
 	base := detectBaseRef()
 
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
@@ -579,17 +625,15 @@ func addWorktree(repoName, wtName string, skipIgnore bool) (string, error) {
 		return "", fmt.Errorf("failed to add worktree: %w", err)
 	}
 
-	if !skipIgnore {
-		if err := copyIgnoredFilesToWorktree(mainPath, wtPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to copy ignored files: %v\n", err)
-		}
+	if err := copyIgnoredFilesToWorktree(mainPath, wtPath, strategy); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to copy ignored files: %v\n", err)
 	}
 
 	return wtPath, nil
 }
 
-func runAdd(repoName, wtName string, skipIgnore bool) error {
-	path, err := addWorktree(repoName, wtName, skipIgnore)
+func runAdd(repoName, wtName string, strategy ignoredStrategy) error {
+	path, err := addWorktree(repoName, wtName, strategy)
 	if err != nil {
 		return err
 	}
@@ -633,7 +677,7 @@ func runSwitch(repoName, wtName string) error {
 
 func printUsage() {
 	fmt.Printf(`Usage:
-  gwt add <worktree-name> [--skip-ignore|-i]  # create new worktree and cd into it
+  gwt add <worktree-name> [--ignored=copy|hardlink|skip]  # create new worktree and cd into it (default: hardlink)
   gwt switch  [worktree-name]                 # switch to existing worktree (or main repo if no arg)
   gwt remove  <worktree-name>                 # remove worktree at ../repo-worktree
   gwt list                                    # list all worktrees
@@ -667,13 +711,25 @@ func main() {
 	sub := os.Args[1]
 	switch sub {
 	case "add", "a":
-		skipIgnore := false
+		var strategy = ignoredUnset
 		var wtName string
 
 		for i := 2; i < len(os.Args); i++ {
 			arg := os.Args[i]
-			if arg == "--skip-ignore" || arg == "-i" {
-				skipIgnore = true
+			if strings.HasPrefix(arg, "--ignored=") {
+				val := strings.TrimPrefix(arg, "--ignored=")
+				switch val {
+				case "copy":
+					strategy = ignoredCopy
+				case "hardlink":
+					strategy = ignoredHardlink
+				case "skip":
+					strategy = ignoredSkip
+				default:
+					fmt.Fprintf(os.Stderr, "error: invalid --ignored value %q (must be copy, hardlink, or skip)\n", val)
+					printUsage()
+					os.Exit(1)
+				}
 			} else if wtName == "" {
 				wtName = arg
 			} else {
@@ -688,7 +744,8 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		if err := runAdd(repoName, wtName, skipIgnore); err != nil {
+
+		if err := runAdd(repoName, wtName, strategy); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
