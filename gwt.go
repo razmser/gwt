@@ -21,23 +21,6 @@ const (
 
 const ignoredUnset ignoredStrategy = -1
 
-func hardlinkSupported(dir string) bool {
-	src, err := os.CreateTemp(dir, "gwt-hlprobe-*-src")
-	if err != nil {
-		return false
-	}
-	srcName := src.Name()
-	src.Close()
-	defer os.Remove(srcName)
-	dstName := srcName + "-dst"
-	err = os.Link(srcName, dstName)
-	if err == nil {
-		os.Remove(dstName)
-		return true
-	}
-	return false
-}
-
 func runGit(args ...string) (string, error) {
 	// #nosec G702 -- arguments are passed directly to the git binary without a shell.
 	cmd := exec.Command("git", args...)
@@ -331,11 +314,8 @@ func removeWorktree(repoName, wtName string) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Git worktree remove failed, forcibly removing directory\n")
-		rmCmd := exec.Command("rm", "-rf", wtPath)
-		rmCmd.Stdout = os.Stdout
-		rmCmd.Stderr = os.Stderr
-		if rmErr := rmCmd.Run(); rmErr != nil {
-			return fmt.Errorf("git worktree remove failed and rm -rf also failed: %w", rmErr)
+		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
+			return fmt.Errorf("git worktree remove failed and removing directory also failed: %w", rmErr)
 		}
 		_ = exec.Command("git", "worktree", "prune").Run()
 	}
@@ -588,11 +568,7 @@ func addWorktree(repoName, wtName string, strategy ignoredStrategy) (string, err
 	branch := fmt.Sprintf("wt/%s", wtName)
 
 	if strategy == ignoredUnset {
-		if hardlinkSupported(filepath.Dir(wtPath)) {
-			strategy = ignoredHardlink
-		} else {
-			strategy = ignoredCopy
-		}
+		strategy = ignoredCopy
 	}
 
 	base := detectBaseRef()
@@ -673,7 +649,7 @@ func runSwitch(repoName, wtName string) error {
 
 func printUsage() {
 	fmt.Printf(`Usage:
-  gwt add <worktree-name> [--ignored=copy|hardlink|skip]  # create new worktree and attach a tmux session (default: hardlink)
+  gwt add <worktree-name> [--ignored=copy|hardlink|skip]  # create new worktree and attach a tmux session (default: copy)
   gwt switch  [worktree-name]                 # switch to existing worktree (or main repo if no arg)
   gwt remove  <worktree-name>                 # remove worktree at ../repo-worktree
   gwt list                                    # list all worktrees
