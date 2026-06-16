@@ -1,7 +1,7 @@
 # Fish completion for gwt command
 
 # Complete subcommands
-complete -c gwt -f -n "__fish_use_subcommand" -a "add" -d "Create new worktree and cd into it"
+complete -c gwt -f -n "__fish_use_subcommand" -a "add" -d "Create new worktree and attach a tmux session"
 complete -c gwt -f -n "__fish_use_subcommand" -a "switch" -d "Switch to existing worktree"
 complete -c gwt -f -n "__fish_use_subcommand" -a "list" -d "List all worktrees"
 complete -c gwt -f -n "__fish_use_subcommand" -a "remove" -d "Remove worktree"

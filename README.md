@@ -25,7 +25,7 @@ just install  # Installs gwt to ~/bin
 ```bash
 $ gwt -h
 Usage:
-  gwt add     <worktree-name> # create new worktree and cd into it
+  gwt add     <worktree-name> # create new worktree and attach a tmux session
   gwt switch  [worktree-name] # switch to existing worktree (or main repo if no arg)
   gwt remove  <worktree-name> # remove worktree at ../repo-worktree
   gwt list                    # list all worktrees
