@@ -61,10 +61,6 @@ func repoRoot() (string, error) {
 	return out, nil
 }
 
-func repoName(root string) string {
-	return filepath.Base(root)
-}
-
 func getMainWorktreePath() (string, error) {
 	out, err := runGit("worktree", "list", "--porcelain")
 	if err != nil {
@@ -677,7 +673,7 @@ func runSwitch(repoName, wtName string) error {
 
 func printUsage() {
 	fmt.Printf(`Usage:
-  gwt add <worktree-name> [--ignored=copy|hardlink|skip]  # create new worktree and cd into it (default: hardlink)
+  gwt add <worktree-name> [--ignored=copy|hardlink|skip]  # create new worktree and attach a tmux session (default: hardlink)
   gwt switch  [worktree-name]                 # switch to existing worktree (or main repo if no arg)
   gwt remove  <worktree-name>                 # remove worktree at ../repo-worktree
   gwt list                                    # list all worktrees

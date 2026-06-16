@@ -8,24 +8,6 @@ import (
 	"testing"
 )
 
-func TestRepoName(t *testing.T) {
-	tests := []struct {
-		root     string
-		expected string
-	}{
-		{"/Users/user/projects/gwt", "gwt"},
-		{"/src/github.com/razmser/gwt", "gwt"},
-		{"/", "/"},
-	}
-
-	for _, tt := range tests {
-		got := repoName(tt.root)
-		if got != tt.expected {
-			t.Errorf("repoName(%q) = %q; want %q", tt.root, got, tt.expected)
-		}
-	}
-}
-
 func TestValidateWorktreeName(t *testing.T) {
 	tests := []struct {
 		name    string
