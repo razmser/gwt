@@ -424,9 +424,19 @@ func cleanupWtBranches() error {
 }
 
 func connectSesh(path string) error {
-	// Add to zoxide
-	// #nosec G702 -- path is passed directly as a single argument without shell expansion.
-	_ = exec.Command("zoxide", "add", path).Run()
+	// Best-effort: track the directory in zoxide if it's installed.
+	if _, err := exec.LookPath("zoxide"); err == nil {
+		// #nosec G702 -- path is passed directly as a single argument without shell expansion.
+		_ = exec.Command("zoxide", "add", path).Run()
+	}
+
+	// sesh is optional. If it isn't installed, the worktree has already been
+	// created successfully, so just print its path for the user to cd into
+	// rather than failing.
+	if _, err := exec.LookPath("sesh"); err != nil {
+		fmt.Println(path)
+		return nil
+	}
 
 	// #nosec G702 -- path is passed directly to sesh without invoking a shell.
 	cmd := exec.Command("sesh", "connect", path)

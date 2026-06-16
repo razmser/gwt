@@ -6,7 +6,11 @@ I created this tool to streamline my workflow with Codex.
 My typical workflow involves creating a worktree, starting Codex there in a tmux session, and then continuing to work on something else.
 The problem is that this workflow requires too many commands, or correctly filling three separate fields in lazygit.
 
-## Dependencies
+## Optional dependencies
+
+All of these are optional. If `sesh` is not installed, `gwt add` and `gwt switch`
+still create/resolve the worktree and simply print its path instead of attaching a
+tmux session. `zoxide` tracking is skipped when `zoxide` is not on `PATH`.
 
 - [zoxide](https://github.com/ajeetdsouza/zoxide) - for directory tracking
 - [sesh](https://github.com/joshmedeski/sesh) - for tmux session management
