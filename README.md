@@ -29,11 +29,11 @@ just install  # Installs gwt to ~/bin
 ```bash
 $ gwt -h
 Usage:
-  gwt add     <worktree-name> # create new worktree and attach a tmux session
-  gwt switch  [worktree-name] # switch to existing worktree (or main repo if no arg)
-  gwt remove  <worktree-name> # remove worktree at ../repo-worktree
-  gwt list                    # list all worktrees
-  gwt cleanup                 # delete dangling wt/* branches after confirmation
+  gwt add <worktree-name> [--ignored=copy|hardlink|skip]  # create new worktree and attach a tmux session (default: copy)
+  gwt switch  [worktree-name]                 # switch to existing worktree (or main repo if no arg)
+  gwt remove  <worktree-name>                 # remove worktree at ../repo-worktree
+  gwt list                                    # list all worktrees
+  gwt cleanup                                 # delete dangling wt/* branches after confirmation
 ```
 
 ### How it works
@@ -45,7 +45,11 @@ Usage:
 - **Main repo switching**: `gwt sw` with no arguments or `gwt sw <repo-name>` switches to the main repository
 - **Smart listing**: `gwt list` shows worktree names and refs in two columns, excluding the main repository; detached worktrees are shown as `(detached @ <commit>)`
 - **Name-based switching/removal**: `gwt sw <name>` and `gwt rm <name>` resolve against the actual Git worktree list, so detached worktrees can be managed too
-- **Cleanup**: When removing a worktree, associated tmux session is automatically killed
+- **Ignored files**: `gwt add` brings gitignored files (e.g. `.env`, `node_modules`) into the new worktree. Control this with `--ignored`:
+  - `copy` (default) — copy each ignored file into the worktree
+  - `hardlink` — hardlink regular files instead of copying (falls back to copy on failure)
+  - `skip` — don't bring ignored files over at all
+- **Tmux cleanup on removal**: When removing a worktree with `gwt rm`, its tmux session is automatically killed
 
 ### Examples
 
@@ -54,7 +58,11 @@ Usage:
 gwt add parsing
 # Creates branch: wt/parsing
 # Creates directory: ../gwt-parsing (alongside main repo)
+# Copies gitignored files (e.g. .env) into the worktree
 # Attaches to tmux session for the worktree
+
+# Create a worktree without bringing gitignored files over
+gwt add parsing --ignored=skip
 
 # List all worktrees (shows name and ref in two columns)
 gwt list
