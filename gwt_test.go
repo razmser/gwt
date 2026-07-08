@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -385,6 +386,178 @@ func TestHardlinkWarnOnFailure(t *testing.T) {
 	}
 	if string(got) != "existing" {
 		t.Fatalf("dst file content = %q; want %q (should not be modified on hardlink failure)", got, "existing")
+	}
+}
+
+func TestSelectMultiplexer(t *testing.T) {
+	tests := []struct {
+		name        string
+		herdrEnv    string
+		tmuxEnv     string
+		seshPresent bool
+		want        multiplexerChoice
+	}{
+		{
+			name:        "herdr wins over tmux when both set",
+			herdrEnv:    "1",
+			tmuxEnv:     "/tmp/tmux-1000/default,1234,0",
+			seshPresent: true,
+			want:        choiceHerdr,
+		},
+		{
+			name:     "herdr with nothing else",
+			herdrEnv: "1",
+			want:     choiceHerdr,
+		},
+		{
+			name:        "tmux with sesh attaches",
+			tmuxEnv:     "/tmp/tmux-1000/default,1234,0",
+			seshPresent: true,
+			want:        choiceTmux,
+		},
+		{
+			name:        "tmux without sesh prints path plus hint",
+			tmuxEnv:     "/tmp/tmux-1000/default,1234,0",
+			seshPresent: false,
+			want:        choicePrintPathHint,
+		},
+		{
+			name:        "no tmux but sesh present still just prints path",
+			tmuxEnv:     "",
+			seshPresent: true,
+			want:        choicePrintPath,
+		},
+		{
+			name:        "no tmux and no sesh prints path",
+			tmuxEnv:     "",
+			seshPresent: false,
+			want:        choicePrintPath,
+		},
+		{
+			// HERDR_ENV is a precise opt-in: anything other than "1" is ignored.
+			name:     "herdr env set to zero is not herdr",
+			herdrEnv: "0",
+			want:     choicePrintPath,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := selectMultiplexer(tt.herdrEnv, tt.tmuxEnv, tt.seshPresent)
+			if got != tt.want {
+				t.Errorf("selectMultiplexer(herdr=%q, tmux=%q, sesh=%v) = %v; want %v",
+					tt.herdrEnv, tt.tmuxEnv, tt.seshPresent, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHerdrCreateArgs(t *testing.T) {
+	got := herdrCreateArgs("/repos/gwt-feature", "feature", "wt/feature")
+
+	want := []string{
+		"worktree", "create",
+		"--branch", "wt/feature",
+		"--path", "/repos/gwt-feature",
+		"--label", "feature",
+		"--focus",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("herdrCreateArgs =\n  %v\nwant\n  %v", got, want)
+	}
+	if slices.Contains(got, "--json") {
+		t.Errorf("herdrCreateArgs must not pass --json (output is unused); got %v", got)
+	}
+	if slices.Contains(got, "--base") {
+		t.Errorf("herdrCreateArgs must not pass --base (herdr defaults to HEAD); got %v", got)
+	}
+}
+
+// herdrListPayload is a representative `herdr worktree list --json` response:
+// the top-level SuccessResponse wraps a tagged result whose worktrees[] each
+// carry path, branch (nullable), label, and open_workspace_id (omitted when the
+// worktree has no live workspace). Shape verified against herdr's WorktreeInfo.
+const herdrListPayload = `{
+  "id": "cli:worktree:list",
+  "result": {
+    "type": "worktree_list",
+    "source": {
+      "repo_key": "gwt",
+      "repo_name": "gwt",
+      "repo_root": "/home/me/gwt",
+      "source_checkout_path": "/home/me/gwt"
+    },
+    "worktrees": [
+      {
+        "path": "/home/me/gwt",
+        "branch": "master",
+        "is_bare": false,
+        "is_detached": false,
+        "is_prunable": false,
+        "is_linked_worktree": false,
+        "label": "gwt",
+        "open_workspace_id": "w_main"
+      },
+      {
+        "path": "/home/me/gwt-feature",
+        "branch": "wt/feature",
+        "is_bare": false,
+        "is_detached": false,
+        "is_prunable": false,
+        "is_linked_worktree": true,
+        "label": "feature",
+        "open_workspace_id": "w_abc123"
+      },
+      {
+        "path": "/home/me/gwt-dormant",
+        "branch": "wt/dormant",
+        "is_bare": false,
+        "is_detached": false,
+        "is_prunable": false,
+        "is_linked_worktree": true,
+        "label": "dormant"
+      }
+    ]
+  }
+}`
+
+func TestParseHerdrWorktreesResolvesWorkspaceID(t *testing.T) {
+	worktrees, err := parseHerdrWorktrees(herdrListPayload)
+	if err != nil {
+		t.Fatalf("parseHerdrWorktrees returned error: %v", err)
+	}
+	if len(worktrees) != 3 {
+		t.Fatalf("parseHerdrWorktrees returned %d worktrees; want 3", len(worktrees))
+	}
+
+	// Matching path with a live workspace resolves the id used to remove it.
+	if got := findHerdrWorkspaceID(worktrees, "/home/me/gwt-feature"); got != "w_abc123" {
+		t.Errorf("findHerdrWorkspaceID(feature) = %q; want w_abc123", got)
+	}
+	// Checkout exists but has no open workspace -> empty -> git fallback.
+	if got := findHerdrWorkspaceID(worktrees, "/home/me/gwt-dormant"); got != "" {
+		t.Errorf("findHerdrWorkspaceID(dormant) = %q; want empty (no live workspace)", got)
+	}
+	// No matching checkout at all -> empty -> git fallback.
+	if got := findHerdrWorkspaceID(worktrees, "/home/me/gwt-missing"); got != "" {
+		t.Errorf("findHerdrWorkspaceID(missing) = %q; want empty (no match)", got)
+	}
+}
+
+func TestParseHerdrWorktreesMalformedJSON(t *testing.T) {
+	if _, err := parseHerdrWorktrees("{not json"); err == nil {
+		t.Fatal("parseHerdrWorktrees expected an error for malformed JSON, got nil")
+	}
+}
+
+func TestHerdrRemoveArgs(t *testing.T) {
+	got := herdrRemoveArgs("w_abc123")
+	want := []string{"worktree", "remove", "--workspace", "w_abc123", "--force"}
+	if !slices.Equal(got, want) {
+		t.Errorf("herdrRemoveArgs =\n  %v\nwant\n  %v", got, want)
+	}
+	if slices.Contains(got, "--json") {
+		t.Errorf("herdrRemoveArgs must not pass --json; got %v", got)
 	}
 }
 

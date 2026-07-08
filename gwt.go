@@ -21,9 +21,11 @@ const (
 
 const ignoredUnset ignoredStrategy = -1
 
-func runGit(args ...string) (string, error) {
-	// #nosec G702 -- arguments are passed directly to the git binary without a shell.
-	cmd := exec.Command("git", args...)
+// runCommand runs an external binary and returns its trimmed stdout. stderr is
+// captured so it can be folded into the returned error rather than printed.
+func runCommand(name string, args ...string) (string, error) {
+	// #nosec G702 -- arguments are passed directly to the named binary without a shell.
+	cmd := exec.Command(name, args...)
 	cmd.Stderr = &bytes.Buffer{}
 	out, err := cmd.Output()
 	if err != nil {
@@ -34,6 +36,10 @@ func runGit(args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func runGit(args ...string) (string, error) {
+	return runCommand("git", args...)
 }
 
 func repoRoot() (string, error) {
@@ -106,28 +112,6 @@ func safeJoinWithin(base, relPath string) (string, error) {
 	}
 
 	return joined, nil
-}
-
-func detectBaseRef() string {
-	// Try to detect a sensible base ref to create the worktree from:
-	// 1) origin/HEAD -> origin/main or origin/master
-	// 2) origin/main
-	// 3) origin/master
-	// 4) main
-	// 5) master
-	candidates := []string{}
-
-	if out, err := runGit("rev-parse", "--abbrev-ref", "origin/HEAD"); err == nil && out != "" {
-		candidates = append(candidates, out)
-	}
-	candidates = append(candidates, "origin/main", "origin/master", "main", "master", "HEAD")
-	for _, c := range candidates {
-		if _, err := runGit("rev-parse", "--verify", c); err == nil {
-			return c
-		}
-	}
-	// fallback
-	return "HEAD"
 }
 
 type wtInfo struct {
@@ -287,7 +271,7 @@ func extractWorktreeName(dirName, repoName string) string {
 	return dirName
 }
 
-func removeWorktree(repoName, wtName string) error {
+func runRemove(mux Multiplexer, repoName, wtName string) error {
 	if err := validateWorktreeName(wtName); err != nil {
 		return err
 	}
@@ -301,35 +285,12 @@ func removeWorktree(repoName, wtName string) error {
 	if err != nil {
 		return err
 	}
-	wtPath := wt.path
-	if filepath.Clean(wtPath) == filepath.Clean(mainPath) {
+
+	if filepath.Clean(wt.path) == filepath.Clean(mainPath) {
 		return errors.New("refusing to remove the main worktree")
 	}
 
-	// Kill tmux session
-	killTmuxSession(filepath.Base(wtPath))
-
-	fmt.Fprintf(os.Stderr, "Removing worktree at %s\n", wtPath)
-	cmd := exec.Command("git", "worktree", "remove", "--force", wtPath)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Git worktree remove failed, forcibly removing directory\n")
-		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
-			return fmt.Errorf("git worktree remove failed and removing directory also failed: %w", rmErr)
-		}
-		_ = exec.Command("git", "worktree", "prune").Run()
-	}
-	return nil
-}
-
-func killTmuxSession(sessionName string) {
-	fmt.Fprintf(os.Stderr, "Checking for tmux session: %s\n", sessionName)
-	if err := exec.Command("tmux", "has-session", "-t", sessionName).Run(); err == nil {
-		fmt.Fprintf(os.Stderr, "Killing tmux session: %s\n", sessionName)
-		if err := exec.Command("tmux", "kill-session", "-t", sessionName).Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to kill tmux session: %v\n", err)
-		}
-	}
+	return mux.Remove(wt.path)
 }
 
 func listWtBranches() ([]string, error) {
@@ -421,29 +382,6 @@ func cleanupWtBranches() error {
 
 	fmt.Printf("\nDeleted %d dangling wt/* branches.\n", len(danglingBranches))
 	return nil
-}
-
-func connectSesh(path string) error {
-	// Best-effort: track the directory in zoxide if it's installed.
-	if _, err := exec.LookPath("zoxide"); err == nil {
-		// #nosec G702 -- path is passed directly as a single argument without shell expansion.
-		_ = exec.Command("zoxide", "add", path).Run()
-	}
-
-	// sesh is optional. If it isn't installed, the worktree has already been
-	// created successfully, so just print its path for the user to cd into
-	// rather than failing.
-	if _, err := exec.LookPath("sesh"); err != nil {
-		fmt.Println(path)
-		return nil
-	}
-
-	// #nosec G702 -- path is passed directly to sesh without invoking a shell.
-	cmd := exec.Command("sesh", "connect", path)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	return cmd.Run()
 }
 
 func mapSymlinkTarget(mainPath, wtPath, srcPath, dstPath, target string) (string, error) {
@@ -565,103 +503,18 @@ func copyIgnoredFilesToWorktree(mainPath, wtPath string, strategy ignoredStrateg
 	return scanner.Err()
 }
 
-func addWorktree(repoName, wtName string, strategy ignoredStrategy) (string, error) {
-	if err := validateWorktreeName(wtName); err != nil {
-		return "", err
-	}
-
-	mainPath, err := getMainWorktreePath()
-	if err != nil {
-		return "", err
-	}
-	wtPath := filepath.Clean(filepath.Join(filepath.Dir(mainPath), fmt.Sprintf("%s-%s", repoName, wtName)))
-	branch := fmt.Sprintf("wt/%s", wtName)
-
-	if strategy == ignoredUnset {
-		strategy = ignoredCopy
-	}
-
-	base := detectBaseRef()
-
-	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
-		return "", fmt.Errorf("creating parent dir: %w", err)
-	}
-
-	_ = exec.Command("git", "fetch", "origin").Run()
-
-	branchExists := false
-	if _, err := runGit("rev-parse", "--verify", branch); err == nil {
-		branchExists = true
-	}
-
-	args := []string{"worktree", "add"}
-	if branchExists {
-		args = append(args, wtPath, branch)
-	} else {
-		args = append(args, "-B", branch, "--no-track", wtPath, base)
-	}
-
-	// #nosec G702 -- arguments are passed directly to the git binary without a shell.
-	cmd := exec.Command("git", args...)
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to add worktree: %w", err)
-	}
-
-	if err := copyIgnoredFilesToWorktree(mainPath, wtPath, strategy); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to copy ignored files: %v\n", err)
-	}
-
-	return wtPath, nil
-}
-
-func runAdd(repoName, wtName string, strategy ignoredStrategy) error {
-	path, err := addWorktree(repoName, wtName, strategy)
+func runAdd(mux Multiplexer, repoName, wtName string, strategy ignoredStrategy) error {
+	spec, err := buildWorktreeSpec(repoName, wtName, strategy)
 	if err != nil {
 		return err
 	}
-	if err := connectSesh(path); err != nil {
-		return fmt.Errorf("error connecting with sesh: %w", err)
-	}
-	return nil
-}
-
-func runSwitch(repoName, wtName string) error {
-	var wtPath string
-
-	switch wtName {
-	case "":
-		// No argument - switch to main repo
-		var err error
-		wtPath, err = getMainWorktreePath()
-		if err != nil {
-			return err
-		}
-	case repoName:
-		// Switching to main repo by name
-		var err error
-		wtPath, err = getMainWorktreePath()
-		if err != nil {
-			return err
-		}
-	default:
-		wt, err := findWorktreeByName(repoName, wtName)
-		if err != nil {
-			return err
-		}
-		wtPath = wt.path
-	}
-
-	if err := connectSesh(wtPath); err != nil {
-		return fmt.Errorf("error connecting with sesh: %w", err)
-	}
-	return nil
+	return mux.Add(spec)
 }
 
 func printUsage() {
 	fmt.Printf(`Usage:
-  gwt add <worktree-name> [--ignored=copy|hardlink|skip]  # create new worktree and attach a tmux session (default: copy)
-  gwt switch  [worktree-name]                 # switch to existing worktree (or main repo if no arg)
-  gwt remove  <worktree-name>                 # remove worktree at ../repo-worktree
+  gwt add <worktree-name> [--ignored=copy|hardlink|skip]  # create new worktree and attach in the active multiplexer (default: copy)
+  gwt remove <worktree-name>                 # remove worktree (and its session/workspace) at ../repo-worktree
   gwt list                                    # list all worktrees
   gwt cleanup                                 # delete dangling wt/* branches after confirmation
 `)
@@ -689,6 +542,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: could not determine repo name: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Select the active multiplexer once: herdr when running inside herdr,
+	// otherwise tmux (via sesh) when inside tmux, otherwise just print the path.
+	mux := newMultiplexer(selectMultiplexer(os.Getenv("HERDR_ENV"), os.Getenv("TMUX"), commandAvailable("sesh")))
 
 	sub := os.Args[1]
 	switch sub {
@@ -727,7 +584,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err := runAdd(repoName, wtName, strategy); err != nil {
+		if err := runAdd(mux, repoName, wtName, strategy); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
@@ -736,25 +593,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error listing worktrees: %v\n", err)
 			os.Exit(1)
 		}
-	case "switch", "sw", "s":
-		var wtName string
-		if len(os.Args) < 3 {
-			// No argument - switch to main repo
-			wtName = ""
-		} else {
-			wtName = os.Args[2]
-		}
-		if err := runSwitch(repoName, wtName); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
 	case "remove", "rm", "r":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "rm requires a worktree name")
 			printUsage()
 			os.Exit(1)
 		}
-		if err := removeWorktree(repoName, os.Args[2]); err != nil {
+		if err := runRemove(mux, repoName, os.Args[2]); err != nil {
 			fmt.Fprintf(os.Stderr, "error removing worktree: %v\n", err)
 			os.Exit(1)
 		}

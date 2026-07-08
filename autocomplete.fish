@@ -1,8 +1,7 @@
 # Fish completion for gwt command
 
 # Complete subcommands
-complete -c gwt -f -n "__fish_use_subcommand" -a "add" -d "Create new worktree and attach a tmux session"
-complete -c gwt -f -n "__fish_use_subcommand" -a "switch" -d "Switch to existing worktree"
+complete -c gwt -f -n "__fish_use_subcommand" -a "add" -d "Create new worktree and attach in the active multiplexer"
 complete -c gwt -f -n "__fish_use_subcommand" -a "list" -d "List all worktrees"
 complete -c gwt -f -n "__fish_use_subcommand" -a "remove" -d "Remove worktree"
 complete -c gwt -f -n "__fish_use_subcommand" -a "cleanup" -d "Delete dangling wt/* branches"
@@ -24,7 +23,6 @@ function __gwt_worktree_names
     end
 end
 
-# Complete worktree names for remove and switch subcommands (including short aliases)
+# Complete worktree names for remove subcommand (including short aliases)
 complete -c gwt -f -n "__fish_seen_subcommand_from remove rm r" -a "(__gwt_worktree_names)"
-complete -c gwt -f -n "__fish_seen_subcommand_from switch sw s" -a "(__gwt_worktree_names)"
 
