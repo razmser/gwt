@@ -60,7 +60,7 @@ By default, `gwt add` copies Git-ignored files, such as `.env` and `node_modules
 
 Use `--ignored` to select a different strategy:
 
-- `copy` copies each ignored file. This is the default.
+- `copy` copies each ignored file. This is the default. On macOS the copies are APFS copy-on-write clones, so a large ignored tree such as a build cache takes no extra disk space until the worktree rewrites it. Where cloning is not possible, `gwt` falls back to a regular copy.
 - `hardlink` hardlinks regular files and falls back to copying when a hardlink cannot be created.
 - `skip` leaves ignored files behind.
 

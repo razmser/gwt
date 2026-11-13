@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type ignoredStrategy int
@@ -457,6 +458,23 @@ func copyPath(mainPath, wtPath, srcPath, dstPath string, strategy ignoredStrateg
 			return nil
 		}
 		return nil
+	}
+
+	// Prefer a copy-on-write clone: a large ignored tree (a build cache, say)
+	// then costs no disk space until the worktree rewrites it. Any failure
+	// falls through to a plain copy.
+	if info.Mode().IsRegular() && cloneFile(srcPath, dstPath) == nil {
+		// A clone keeps the source's mtime; give it a fresh one like a plain
+		// copy gets, so mtime-based build tools do not see it as older than
+		// the freshly checked-out sources and rebuild it.
+		now := time.Now()
+		if os.Chtimes(dstPath, now, now) == nil {
+			return nil
+		}
+		// Setting the times can fail where a plain copy works (an ACL that
+		// denies writeattr, say). Drop the clone, which may be read-only, and
+		// copy instead.
+		_ = os.Remove(dstPath)
 	}
 
 	data, err := os.ReadFile(srcPath)

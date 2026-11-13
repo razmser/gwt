@@ -389,6 +389,74 @@ func TestHardlinkWarnOnFailure(t *testing.T) {
 	}
 }
 
+func TestCopyOverwritesExistingDestination(t *testing.T) {
+	mainPath := t.TempDir()
+	wtPath := t.TempDir()
+
+	srcFile := filepath.Join(mainPath, "file.txt")
+	if err := os.WriteFile(srcFile, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	// A clone cannot replace an existing file, so this exercises the fallback
+	// to a plain copy.
+	dstFile := filepath.Join(wtPath, "file.txt")
+	if err := os.WriteFile(dstFile, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
+
+	if err := copyPath(mainPath, wtPath, srcFile, dstFile, ignoredCopy); err != nil {
+		t.Fatalf("copyPath returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("dst file content = %q; want %q", got, "hello")
+	}
+}
+
+func TestCopyProducesIndependentFile(t *testing.T) {
+	mainPath := t.TempDir()
+	wtPath := t.TempDir()
+
+	srcFile := filepath.Join(mainPath, "file.txt")
+	if err := os.WriteFile(srcFile, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	dstFile := filepath.Join(wtPath, "file.txt")
+	if err := copyPath(mainPath, wtPath, srcFile, dstFile, ignoredCopy); err != nil {
+		t.Fatalf("copyPath returned error: %v", err)
+	}
+
+	srcInfo, err := os.Stat(srcFile)
+	if err != nil {
+		t.Fatalf("stat src: %v", err)
+	}
+	dstInfo, err := os.Stat(dstFile)
+	if err != nil {
+		t.Fatalf("stat dst: %v", err)
+	}
+	if os.SameFile(srcInfo, dstInfo) {
+		t.Fatal("copy must not share an inode with its source")
+	}
+
+	// Unlike a hardlink, writing to the copy must leave the source untouched.
+	if err := os.WriteFile(dstFile, []byte("changed"), 0o600); err != nil {
+		t.Fatalf("rewrite dst: %v", err)
+	}
+	got, err := os.ReadFile(srcFile)
+	if err != nil {
+		t.Fatalf("read src: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("src file content = %q; want %q (copy must be independent)", got, "hello")
+	}
+}
+
 func TestSelectMultiplexer(t *testing.T) {
 	tests := []struct {
 		name        string
